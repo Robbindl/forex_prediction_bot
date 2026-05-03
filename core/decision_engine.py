@@ -4,7 +4,7 @@ from copy import deepcopy
 from typing import Any, Dict, Iterable, List, Mapping, Optional
 import time
 
-from core.asset_profiles import get_execution_policy, get_profile
+from core.asset_profiles import classify_depth_feed, get_depth_feed_policy, get_execution_policy, get_profile
 from core.signal import Signal
 from core.signal_journal import KILLED, PASS
 from utils.logger import get_logger
@@ -221,7 +221,7 @@ class SignalDecisionEngine:
         metadata = self._merge_context(signal, context)
         profile = get_profile(signal.asset)
         metadata["asset_profile_category"] = profile.category
-        metadata["asset_universe_depth_rule"] = "universal"
+        metadata["asset_universe_depth_rule"] = "source_aware_independent"
 
         status = _as_dict(context.get("market_status"))
         if status and status.get("market_open") is False:
@@ -242,6 +242,49 @@ class SignalDecisionEngine:
         synthetic_depth = bool(micro.get("synthetic_depth_available") or metadata.get("synthetic_depth_available"))
         depth_quality = _safe_float(micro.get("depth_quality", metadata.get("depth_quality")), 0.0)
         trust = _safe_float(micro.get("depth_provider_trust_score", metadata.get("depth_provider_trust_score")), 0.0)
+        depth_levels = int(
+            _safe_float(
+                micro.get("depth_levels")
+                or metadata.get("depth_levels")
+                or max(
+                    _safe_float(micro.get("bid_level_count") or micro.get("visible_bid_levels"), 0.0),
+                    _safe_float(micro.get("ask_level_count") or micro.get("visible_ask_levels"), 0.0),
+                ),
+                0.0,
+            )
+        )
+        feed_class = str(micro.get("depth_feed_class") or metadata.get("depth_feed_class") or "").strip().lower()
+        if not feed_class:
+            feed_class = classify_depth_feed(
+                asset=signal.asset,
+                category=signal.category or profile.category,
+                provider=str(micro.get("depth_provider") or micro.get("provider") or metadata.get("depth_provider") or ""),
+                provider_class=str(micro.get("depth_provider_class") or metadata.get("depth_provider_class") or ""),
+                source=str(micro.get("microstructure_source") or metadata.get("microstructure_source") or ""),
+                depth_available=depth_available,
+                synthetic_depth=synthetic_depth,
+                levels=depth_levels,
+            )
+        depth_policy = get_depth_feed_policy(signal.asset, signal.category or profile.category, feed_class)
+        feed_class = str(depth_policy.get("depth_feed_class") or feed_class)
+        depth_min_levels = int(depth_policy.get("min_levels", 0) or 0)
+        depth_min_quality = _safe_float(depth_policy.get("min_quality"), 1.0)
+        depth_min_trust = _safe_float(depth_policy.get("min_trust"), 1.0)
+        depth_support_floor = _safe_float(depth_policy.get("support_min"), 1.0)
+        depth_conflict_floor = _safe_float(depth_policy.get("conflict_block"), 1.0)
+        depth_actionable = bool(
+            depth_available
+            and not synthetic_depth
+            and feed_class not in {"quote_only", "synthetic"}
+            and depth_levels >= depth_min_levels
+            and depth_quality >= depth_min_quality
+            and trust >= depth_min_trust
+        )
+        metadata["depth_feed_class"] = feed_class
+        metadata["depth_min_levels_required"] = depth_min_levels
+        metadata["depth_source_independence_rule"] = "source_aware"
+        metadata["depth_policy_conflict_block"] = round(depth_conflict_floor, 4)
+        metadata["depth_policy_support_min"] = round(depth_support_floor, 4)
         directional_depth = max(book * direction, flow * direction)
         metadata["directional_depth_pressure"] = round(directional_depth, 4)
 
@@ -251,12 +294,14 @@ class SignalDecisionEngine:
             notes.append("structure_conflict")
             signal.reduce(0.05)
         if depth_available and not synthetic_depth:
-            if directional_depth <= -0.22 and depth_quality >= 0.20 and trust >= 0.42:
+            if not depth_actionable:
+                notes.append(f"{feed_class}_not_actionable")
+            elif directional_depth <= -depth_conflict_floor:
                 metadata["depth_conflict"] = True
-                return self._kill(signal, STEP_MARKET, "market", "depth context conflict against signal direction")
-            if directional_depth >= 0.18 and depth_quality >= 0.24:
-                signal.boost(0.025)
-                notes.append("true_depth_support")
+                return self._kill(signal, STEP_MARKET, "market", f"{feed_class} depth context conflicts with signal direction")
+            if directional_depth >= depth_support_floor:
+                signal.boost(0.025 if feed_class == "exchange_deep" else 0.015)
+                notes.append(f"{feed_class}_support")
         elif not depth_available:
             notes.append("depth_absent_no_hard_block")
 
@@ -283,10 +328,14 @@ class SignalDecisionEngine:
         opposite_trends = {"trending_down", "down", "sell"} if direction > 0 else {"trending_up", "up", "buy"}
         htf_conflict = bool(trend_1h in opposite_trends and trend_4h in opposite_trends)
         if htf_conflict:
-            if depth_available and not synthetic_depth and directional_depth >= 0.22:
+            if (
+                depth_actionable
+                and bool(depth_policy.get("confirmation_override_allowed"))
+                and directional_depth >= max(0.22, depth_support_floor)
+            ):
                 signal.confidence = round(before - 0.015, 3)
                 metadata["higher_timeframe_conflict_penalty"] = 0.035
-                metadata["higher_timeframe_guard"] = {"action": "reduce_depth_override", "depth_flow_override_source": "true_depth"}
+                metadata["higher_timeframe_guard"] = {"action": "reduce_depth_override", "depth_flow_override_source": feed_class}
                 notes.append("htf_depth_override")
             elif (
                 bool(structure.get("failed_opposite_move_confirmed"))
@@ -534,6 +583,40 @@ class SignalDecisionEngine:
         synthetic_depth = bool(micro.get("synthetic_depth_available") or metadata.get("synthetic_depth_available"))
         depth_quality = _safe_float(micro.get("depth_quality", metadata.get("depth_quality")), 0.0)
         trust = _safe_float(micro.get("depth_provider_trust_score", metadata.get("depth_provider_trust_score")), 0.0)
+        depth_levels = int(
+            _safe_float(
+                micro.get("depth_levels")
+                or metadata.get("depth_levels")
+                or max(
+                    _safe_float(micro.get("bid_level_count") or micro.get("visible_bid_levels"), 0.0),
+                    _safe_float(micro.get("ask_level_count") or micro.get("visible_ask_levels"), 0.0),
+                ),
+                0.0,
+            )
+        )
+        feed_class = str(micro.get("depth_feed_class") or metadata.get("depth_feed_class") or "").strip().lower()
+        if not feed_class:
+            feed_class = classify_depth_feed(
+                asset=signal.asset,
+                category=signal.category,
+                provider=str(micro.get("depth_provider") or micro.get("provider") or metadata.get("depth_provider") or ""),
+                provider_class=str(micro.get("depth_provider_class") or metadata.get("depth_provider_class") or ""),
+                source=str(micro.get("microstructure_source") or metadata.get("microstructure_source") or ""),
+                depth_available=depth_available,
+                synthetic_depth=synthetic_depth,
+                levels=depth_levels,
+            )
+        depth_feed_policy = get_depth_feed_policy(signal.asset, signal.category, feed_class)
+        feed_class = str(depth_feed_policy.get("depth_feed_class") or feed_class)
+        depth_min_levels = int(depth_feed_policy.get("min_levels", 0) or 0)
+        depth_min_quality = _safe_float(depth_feed_policy.get("min_quality"), 1.0)
+        depth_min_trust = _safe_float(depth_feed_policy.get("min_trust"), 1.0)
+        depth_support_floor = _safe_float(depth_feed_policy.get("support_min"), 1.0)
+        depth_conflict_floor = _safe_float(depth_feed_policy.get("conflict_block"), policy.get("depth_conflict_block", 0.22))
+        metadata["depth_feed_class"] = feed_class
+        metadata["depth_min_levels_required"] = depth_min_levels
+        metadata["depth_policy_support_min"] = round(depth_support_floor, 4)
+        metadata["depth_policy_conflict_block"] = round(depth_conflict_floor, 4)
         orderflow = _safe_float(micro.get("orderflow_imbalance", metadata.get("orderflow_imbalance")), 0.0) * direction
         book = _safe_float(micro.get("book_imbalance", metadata.get("book_imbalance")), 0.0) * direction
         flow = _safe_float(micro.get("score", metadata.get("microstructure_alignment")), 0.0) * direction
@@ -548,14 +631,16 @@ class SignalDecisionEngine:
         stream_floor = _safe_float(policy.get("dom_stream_hard_floor"), 0.30)
         stream_hard_floor = bool(event_ladder and (stream_score < stream_floor or stream_degraded))
 
-        support_quality = (
+        depth_capability_ready = (
             depth_available
             and not synthetic_depth
-            and depth_quality >= _safe_float(policy.get("preferred_true_depth_min_quality"), 0.36)
-            and trust >= _safe_float(policy.get("preferred_true_depth_min_trust_score"), 0.60)
-            and directional_flow >= _safe_float(policy.get("depth_sovereignty_min_directional_flow"), 0.28)
+            and feed_class not in {"quote_only", "synthetic"}
+            and depth_levels >= depth_min_levels
+            and depth_quality >= depth_min_quality
+            and trust >= depth_min_trust
             and not stream_hard_floor
         )
+        depth_source_ready = bool(depth_capability_ready and directional_flow >= depth_support_floor)
         extension = _safe_float(structure.get("extension_score", metadata.get("extension_score")), 0.0)
         target = _safe_float(structure.get("target_efficiency_score", metadata.get("target_efficiency_score")), 0.0)
         impulse_age = int(_safe_float(structure.get("impulse_age_bars", metadata.get("impulse_age_bars")), 0.0))
@@ -563,6 +648,17 @@ class SignalDecisionEngine:
         setup = _safe_float(structure.get("setup_quality", metadata.get("setup_quality")), 0.0)
         confirmation_ready = bool(structure.get("entry_confirmation_ready", metadata.get("entry_confirmation_ready")))
         fast_confirmation_ready = bool(structure.get("fast_entry_confirmation_ready", metadata.get("fast_entry_confirmation_ready")))
+        exchange_depth_source = bool(depth_source_ready and feed_class == "exchange_deep")
+        broker_l2_source = bool(depth_source_ready and feed_class in {"broker_l2", "thin_broker_l2"})
+        broker_l2_execution_support = bool(
+            broker_l2_source
+            and (
+                confirmation_ready
+                or fast_confirmation_ready
+                or (alignment >= 0.62 and setup >= 0.55)
+            )
+        )
+        support_quality = bool(exchange_depth_source or broker_l2_execution_support)
         entry_style = str(metadata.get("playbook_entry_style") or "").strip().lower()
         context_candidate = bool(
             "context_continuation" in entry_style
@@ -583,16 +679,17 @@ class SignalDecisionEngine:
         provider_class = str(micro.get("depth_provider_class", metadata.get("depth_provider_class", "")) or "").lower()
         trusted_real_snapshot = bool(
             update_mode in {"stream_snapshot", "snapshot_poll"}
-            and trust >= 0.58
-            and depth_quality >= 0.28
+            and depth_source_ready
             and (
                 source_name in {"binance_rest_depth", "binance_live_depth", "ctrader_live_depth", "dukascopy_live_depth"}
-                or provider_class in {"exchange", "sidecar"}
+                or provider_class in {"exchange", "exchange_depth", "broker_l2", "sidecar"}
             )
         )
-        true_depth_source = bool(depth_available and not synthetic_depth and (event_ladder or update_mode == "event_stream" or trusted_real_snapshot))
+        exchange_true_depth_source = bool(exchange_depth_source and (event_ladder or update_mode == "event_stream" or trusted_real_snapshot))
+        broker_l2_context_source = bool(broker_l2_source and trusted_real_snapshot)
+        true_depth_source = bool(exchange_true_depth_source or broker_l2_context_source)
         support_quality = bool(support_quality and true_depth_source)
-        strong_true_depth = bool(true_depth_source and depth_quality >= 0.55 and trust >= 0.58 and directional_flow >= 0.20)
+        strong_true_depth = bool(exchange_true_depth_source and depth_quality >= 0.55 and trust >= 0.58 and directional_flow >= 0.20)
         supportive_direction = str(metadata.get("cross_asset_supportive_direction") or "").strip().upper()
         cross_alignment = _safe_float(metadata.get("cross_asset_alignment"), 0.0)
         cross_confidence = _safe_float(metadata.get("cross_asset_confidence"), 0.0)
@@ -612,14 +709,30 @@ class SignalDecisionEngine:
         )
         relief_flags.update(
             {
-                "depth_sovereignty_supported": bool(support_quality),
-                "depth_sovereignty_source": "true_depth" if true_depth_source else "flow",
-                "depth_sovereignty_reason": "supported:trusted_real_dom_fallback" if support_quality else "not_supported",
+                "depth_sovereignty_supported": bool(exchange_true_depth_source and support_quality),
+                "depth_sovereignty_source": feed_class if true_depth_source else "flow",
+                "depth_sovereignty_reason": (
+                    "supported:exchange_deep"
+                    if exchange_true_depth_source and support_quality
+                    else "supported:broker_l2_context"
+                    if broker_l2_execution_support
+                    else "not_supported"
+                ),
+                "broker_l2_context_support": bool(broker_l2_execution_support),
+                "depth_feed_class": feed_class,
+                "depth_min_levels_required": depth_min_levels,
                 "strong_true_depth_support": bool(strong_true_depth),
                 "depth_flow_sovereignty_candidate": bool(strong_true_depth and "elite_flow_continuation" not in entry_style),
-                "depth_flow_sovereignty_rescue_candidate": bool(support_quality and not (confirmation_ready or fast_confirmation_ready)),
-                "depth_flow_sovereignty_confirmation_override": bool(support_quality and not (confirmation_ready or fast_confirmation_ready)),
-                "snapshot_dom_requires_confirmation": bool(depth_available and update_mode == "snapshot_poll" and not trusted_real_snapshot),
+                "depth_flow_sovereignty_rescue_candidate": bool(exchange_true_depth_source and support_quality and not (confirmation_ready or fast_confirmation_ready)),
+                "depth_flow_sovereignty_confirmation_override": bool(exchange_true_depth_source and support_quality and not (confirmation_ready or fast_confirmation_ready)),
+                "snapshot_dom_requires_confirmation": bool(
+                    depth_available
+                    and (
+                        feed_class in {"broker_l2", "thin_broker_l2"}
+                        or (update_mode == "snapshot_poll" and not trusted_real_snapshot)
+                    )
+                    and not (confirmation_ready or fast_confirmation_ready)
+                ),
                 "dom_stream_hard_floor_breached": bool(stream_hard_floor),
                 "event_ladder_hostile_flow": bool(
                     event_ladder
@@ -641,6 +754,9 @@ class SignalDecisionEngine:
                 "crypto_breadth_conflict": bool(cross_conflict),
                 "crypto_derivative_conflict": bool(derivative_conflict),
                 "crypto_derivative_support": bool(derivative_support),
+                "cross_market_breadth_conflict": bool(cross_conflict),
+                "derivative_conflict": bool(derivative_conflict),
+                "derivative_support": bool(derivative_support),
                 "trade_flow_conflict": bool(trade_flow_conflict),
                 "context_continuation_execution_candidate": bool(context_candidate),
                 "context_confirmation_override": bool(context_candidate and not (confirmation_ready or fast_confirmation_ready)),
@@ -691,7 +807,7 @@ class SignalDecisionEngine:
             relief_flags["event_ladder_cross_market_hard_block"] = True
             hard_blocks.append("event-ladder DOM, hostile flow, and cross-asset conflict are aligned against the continuation")
         elif cross_conflict and not context_candidate and not (confirmation_ready and fast_confirmation_ready) and (trade_flow_conflict or hostile_flow <= -0.22) and not derivative_support:
-            hard_blocks.append("broad crypto breadth and live flow are aligned against the trade")
+            hard_blocks.append("cross-market breadth and live flow are aligned against the trade")
 
         entry_policy = _as_dict(structure.get("regime_entry_policy"))
         max_extension = _safe_float(entry_policy.get("max_extension_score", policy.get("max_extension_score")), 1.18)
@@ -713,8 +829,8 @@ class SignalDecisionEngine:
             late_reasons.append("entry confirmation delay has not completed yet")
             if not support_quality:
                 hard_blocks.append("entry confirmation delay is still pending")
-        if directional_flow <= -_safe_float(policy.get("depth_conflict_block"), 0.22) and depth_available and not (confirmation_ready and fast_confirmation_ready):
-            hard_blocks.append("depth pressure conflicts with signal direction")
+        if directional_flow <= -depth_conflict_floor and depth_capability_ready and not (confirmation_ready and fast_confirmation_ready):
+            hard_blocks.append(f"{feed_class} pressure conflicts with signal direction")
         if target < 0.08:
             hard_blocks.append("too little clean space remains to the target")
             metadata["context_pressure_soft_override_applied"] = False
@@ -741,20 +857,28 @@ class SignalDecisionEngine:
                 ["entry confirmation delay is still pending", "pattern family ranks below elite threshold"],
             )
         if true_depth_source:
-            metadata["true_depth_provider_kind"] = "sidecar" if provider_class == "sidecar" else "exchange" if "exchange" in provider_class or "binance" in source_name else "direct"
-            metadata["sidecar_true_depth_source"] = metadata["true_depth_provider_kind"] == "sidecar"
-            if metadata["sidecar_true_depth_source"]:
+            metadata["true_depth_provider_kind"] = (
+                "exchange_deep"
+                if exchange_true_depth_source
+                else "broker_l2"
+                if broker_l2_context_source
+                else "direct"
+            )
+            metadata["sidecar_true_depth_source"] = metadata["true_depth_provider_kind"] in {"broker_l2", "sidecar"}
+            metadata["broker_l2_true_depth_source"] = metadata["true_depth_provider_kind"] == "broker_l2"
+            if metadata["broker_l2_true_depth_source"]:
                 effective_policy["preferred_true_depth_min_trust_score"] = trust
             relief_flags["trusted_real_dom_book_available"] = True
-            relief_flags["trusted_real_dom_fallback_support"] = bool(trusted_stream_fallback or trusted_real_snapshot)
+            relief_flags["trusted_real_dom_fallback_support"] = bool(exchange_true_depth_source and (trusted_stream_fallback or trusted_real_snapshot))
+            relief_flags["trusted_real_broker_l2_support"] = bool(broker_l2_execution_support)
         breakout_momentum = bool("breakout_close" in entry_style and setup >= 0.50)
         relief_flags["breakout_ignition_candidate"] = bool("breakout_ignition" in entry_style)
         relief_flags["breakout_ignition_confirmation_override"] = bool(relief_flags["breakout_ignition_candidate"])
         relief_flags["breakout_momentum_late_override_candidate"] = breakout_momentum
-        relief_flags["breakout_momentum_depth_ok"] = bool(true_depth_source)
+        relief_flags["breakout_momentum_depth_ok"] = bool(exchange_true_depth_source or broker_l2_execution_support)
         metadata["breakout_momentum_late_override_applied"] = bool(breakout_momentum and not hard_blocks)
         relief_flags["breakout_momentum_late_override_applied"] = metadata["breakout_momentum_late_override_applied"]
-        if true_depth_source and depth_quality >= 0.80 and "elite_flow_continuation" in entry_style and not hard_blocks:
+        if exchange_true_depth_source and depth_quality >= 0.80 and "elite_flow_continuation" in entry_style and not hard_blocks:
             metadata["guarded_force_candidate"] = True
             metadata["guarded_force_applied"] = True
             metadata["guarded_force_removed_blocks"] = [
@@ -783,7 +907,9 @@ class SignalDecisionEngine:
         metadata["execution_relief_flags"] = relief_flags
         metadata["execution_hard_blocks"] = hard_blocks
         data["late_entry_risk"] = round(late_score, 4)
-        data["depth_sovereignty_supported"] = bool(support_quality)
+        data["depth_sovereignty_supported"] = bool(exchange_true_depth_source and support_quality)
+        data["broker_l2_context_support"] = bool(broker_l2_execution_support)
+        data["depth_feed_class"] = feed_class
         if hard_blocks:
             return self._kill(signal, STEP_EXECUTION, "execution", "execution hard block on signal: " + "; ".join(hard_blocks[:3]), data)
         notes.append("late_entry_ok")

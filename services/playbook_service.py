@@ -4,6 +4,8 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any, Dict, Iterable, List, Optional, Tuple
 
+from core.asset_profiles import classify_depth_feed, get_depth_feed_policy
+
 
 def _clip(value: float, low: float = 0.0, high: float = 1.0) -> float:
     try:
@@ -112,14 +114,24 @@ def _direction_label(sign: int) -> str:
 
 
 def _trusted_context_depth_direction(context: Optional[Dict[str, Any]]) -> int:
-    micro = dict((context or {}).get("market_microstructure") or {})
-    pressure, ready = _trusted_depth_pressure_score(micro)
+    ctx = context or {}
+    micro = dict(ctx.get("market_microstructure") or {})
+    pressure, ready = _trusted_depth_pressure_score(
+        micro,
+        asset=str(ctx.get("asset") or micro.get("asset") or ""),
+        category=str(ctx.get("category") or micro.get("category") or ""),
+    )
     if not ready or abs(pressure) < 0.24:
         return 0
     return 1 if pressure > 0.0 else -1
 
 
-def _trusted_depth_pressure_score(micro: Dict[str, Any]) -> Tuple[float, bool]:
+def _trusted_depth_pressure_score(
+    micro: Dict[str, Any],
+    *,
+    asset: str = "",
+    category: str = "",
+) -> Tuple[float, bool]:
     depth_available = bool(micro.get("depth_available"))
     synthetic = bool(micro.get("synthetic_depth_available") or micro.get("synthetic_depth"))
     try:
@@ -135,16 +147,31 @@ def _trusted_depth_pressure_score(micro: Dict[str, Any]) -> Tuple[float, bool]:
         levels = 0
     mode = str(micro.get("depth_update_mode") or "").strip().lower()
     fidelity = str(micro.get("dom_source_fidelity") or "").strip().lower()
+    feed_class = str(micro.get("depth_feed_class") or "").strip().lower()
+    if not feed_class:
+        feed_class = classify_depth_feed(
+            asset=asset or str(micro.get("asset") or ""),
+            category=category or str(micro.get("category") or ""),
+            provider=str(micro.get("depth_provider") or micro.get("provider") or micro.get("exchange") or ""),
+            provider_class=str(micro.get("depth_provider_class") or micro.get("source_class") or ""),
+            source=str(micro.get("microstructure_source") or micro.get("source") or ""),
+            depth_available=depth_available,
+            synthetic_depth=synthetic,
+            levels=levels,
+        )
+    policy = get_depth_feed_policy(asset or str(micro.get("asset") or ""), category or str(micro.get("category") or ""), feed_class)
+    feed_class = str(policy.get("depth_feed_class") or feed_class)
+    required_levels = int(policy.get("min_levels", 2) or 2)
+    level_requirement_met = levels >= required_levels
+    if feed_class == "exchange_deep":
+        level_requirement_met = level_requirement_met or mode in _REAL_DEPTH_MODES or fidelity in {"event_ladder", "snapshot_depth", "stream_snapshot"}
     true_depth = bool(
         depth_available
         and not synthetic
-        and (
-            levels >= 2
-            or mode in _REAL_DEPTH_MODES
-            or fidelity in {"event_ladder", "snapshot_depth", "stream_snapshot"}
-        )
-        and _safe_float(micro.get("depth_quality"), 0.0) >= 0.24
-        and _safe_float(micro.get("depth_provider_trust_score"), 0.0) >= 0.50
+        and feed_class not in {"quote_only", "synthetic"}
+        and level_requirement_met
+        and _safe_float(micro.get("depth_quality"), 0.0) >= _safe_float(policy.get("min_quality"), 0.24)
+        and _safe_float(micro.get("depth_provider_trust_score"), 0.0) >= _safe_float(policy.get("min_trust"), 0.50)
     )
     if not true_depth:
         return 0.0, False
@@ -357,7 +384,7 @@ class PlaybookService:
         }
 
     def _context_directional_confluence(self, context: Optional[Dict[str, Any]], direction: str) -> Dict[str, Any]:
-        ctx = context if isinstance(context, dict) else {}
+        ctx = dict(context) if isinstance(context, dict) else {}
         direction_sign = _playbook_direction_sign(direction)
         if direction_sign == 0:
             return self._empty_context(direction="")
@@ -377,7 +404,11 @@ class PlaybookService:
         cross_support = _clip(cross_score * direction_sign, -1.0, 1.0)
         cross_confidence = _clip(_safe_float(cross.get("confidence"), 0.0), 0.0, 1.0)
 
-        pressure_score, pressure_ready = _trusted_depth_pressure_score(micro)
+        pressure_score, pressure_ready = _trusted_depth_pressure_score(
+            micro,
+            asset=str(ctx.get("asset") or micro.get("asset") or ""),
+            category=str(ctx.get("category") or micro.get("category") or ""),
+        )
         if pressure_ready:
             micro_support = _clip(pressure_score * direction_sign, -1.0, 1.0)
         else:
@@ -424,7 +455,11 @@ class PlaybookService:
             1.0,
         )
 
-        depth = self._depth_readiness(micro)
+        depth = self._depth_readiness(
+            micro,
+            asset=str(ctx.get("asset") or micro.get("asset") or ""),
+            category=str(ctx.get("category") or micro.get("category") or ""),
+        )
         return {
             "direction": direction,
             "score": round(score, 4),
@@ -456,6 +491,10 @@ class PlaybookService:
             "depth_update_mode": "none",
             "depth_provider": "",
             "depth_provider_class": "",
+            "depth_feed_class": "quote_only",
+            "depth_normalization_scope": "",
+            "depth_sovereignty_allowed": False,
+            "depth_confirmation_override_allowed": False,
             "microstructure_source": "none",
             "dom_event_backed": False,
             "dom_ladder_ready": False,
@@ -464,7 +503,13 @@ class PlaybookService:
             "dom_authority_tier": "none",
         }
 
-    def _depth_readiness(self, micro: Dict[str, Any]) -> Dict[str, Any]:
+    def _depth_readiness(
+        self,
+        micro: Dict[str, Any],
+        *,
+        asset: str = "",
+        category: str = "",
+    ) -> Dict[str, Any]:
         mode = str(micro.get("depth_update_mode") or "").strip().lower()
         provider = str(micro.get("depth_provider") or micro.get("provider") or micro.get("exchange") or "").strip()
         provider_key = provider.lower()
@@ -487,7 +532,19 @@ class PlaybookService:
             ),
             0,
         )
-        if levels <= 0 and depth_available and (
+        feed_class = str(micro.get("depth_feed_class") or "").strip().lower()
+        if not feed_class:
+            feed_class = classify_depth_feed(
+                asset=asset or str(micro.get("asset") or ""),
+                category=category or str(micro.get("category") or ""),
+                provider=provider,
+                provider_class=provider_class,
+                source=source,
+                depth_available=depth_available,
+                synthetic_depth=synthetic,
+                levels=levels,
+            )
+        if feed_class == "exchange_deep" and levels <= 0 and depth_available and (
             mode in _REAL_DEPTH_MODES
             or event_backed
             or ladder_ready
@@ -495,8 +552,26 @@ class PlaybookService:
             or source_fidelity in {"event_ladder", "snapshot_depth"}
         ):
             levels = 2
-        if levels <= 0:
+        if feed_class == "exchange_deep" and levels <= 0:
             levels = {"top_only": 1, "thin": 2, "partial": 4, "solid": 6, "strong": 8, "full": 10}.get(quality_tier, 0)
+        feed_class = classify_depth_feed(
+            asset=asset or str(micro.get("asset") or ""),
+            category=category or str(micro.get("category") or ""),
+            provider=provider,
+            provider_class=provider_class,
+            source=source,
+            depth_available=depth_available,
+            synthetic_depth=synthetic,
+            levels=levels,
+        )
+        policy = get_depth_feed_policy(
+            asset or str(micro.get("asset") or ""),
+            category or str(micro.get("category") or ""),
+            feed_class,
+        )
+        min_levels = _safe_int(policy.get("min_levels"), 2)
+        min_quality = _safe_float(policy.get("min_quality"), 0.35)
+        min_trust = _safe_float(policy.get("min_trust"), 0.52)
         quality = _clip(_safe_float(micro.get("depth_quality"), 0.0), 0.0, 1.0)
         if quality <= 0.0 and levels > 0:
             if mode in _REAL_DEPTH_MODES or event_backed or ladder_ready or snapshot_ready or source_fidelity in {"event_ladder", "snapshot_depth"}:
@@ -505,30 +580,27 @@ class PlaybookService:
                 quality = _clip(levels / 10.0, 0.20, 1.0)
         trust = _clip(_safe_float(micro.get("depth_provider_trust_score"), 0.0), 0.0, 1.0)
         if trust <= 0.0:
-            if provider_class == "exchange_depth" or any(token in provider_key for token in ("binance", "bybit", "okx")):
+            if feed_class == "exchange_deep" or provider_class == "exchange_depth" or any(token in provider_key for token in ("binance", "bybit", "okx")):
                 trust = 0.86
-            elif provider_class in {"redis_subscriber", "sidecar"} or any(token in provider_key for token in ("dukascopy", "ctrader", "orderflow")):
+            elif feed_class in {"broker_l2", "thin_broker_l2"} or provider_class in {"broker_l2", "sidecar", "redis_subscriber"} or any(token in provider_key for token in ("dukascopy", "ctrader", "orderflow")):
                 trust = 0.72
             elif depth_available and (mode in _REAL_DEPTH_MODES or event_backed or ladder_ready or snapshot_ready):
                 trust = 0.70
         quote_alignment = _clip(_safe_float(micro.get("depth_quote_alignment_score"), 1.0), 0.0, 1.0)
         agreement = str(micro.get("depth_quote_agreement_state") or "").strip().lower()
-        exchange_depth = provider_class == "exchange_depth" or any(token in provider_key for token in ("binance", "bybit", "okx")) or source in {"binance_live_depth", "binance_rest_depth"}
-        sidecar_depth = provider_class in {"sidecar", "redis_subscriber"} or any(token in provider_key for token in ("dukascopy", "ctrader", "orderflow"))
-        min_levels = 5 if exchange_depth else 2 if sidecar_depth else 2
-        min_quality = 0.45 if exchange_depth else 0.35
-        min_trust = 0.64 if exchange_depth else 0.52
 
         reasons: List[str] = []
         if not depth_available:
             reasons.append("depth_unavailable")
         if synthetic:
             reasons.append("synthetic_depth")
+        if feed_class in {"quote_only", "synthetic"}:
+            reasons.append("depth_not_actionable")
         if external_rejected:
             reasons.append("external_depth_rejected")
         if mode in _FALSE_DEPTH_MODES:
             reasons.append("depth_mode_untrusted")
-        if mode and mode not in _REAL_DEPTH_MODES:
+        if mode and mode not in _REAL_DEPTH_MODES and mode != "none":
             reasons.append("depth_mode_unknown")
         if levels < min_levels:
             reasons.append("depth_too_shallow")
@@ -550,6 +622,16 @@ class PlaybookService:
             "depth_update_mode": mode or "none",
             "depth_provider": provider,
             "depth_provider_class": provider_class,
+            "depth_feed_class": str(policy.get("depth_feed_class") or feed_class),
+            "depth_normalization_scope": str(
+                micro.get("depth_normalization_scope")
+                or f"{asset or micro.get('asset') or ''}:{provider or source}:{policy.get('depth_feed_class') or feed_class}"
+            ),
+            "depth_min_levels_required": min_levels,
+            "depth_min_quality_required": round(min_quality, 4),
+            "depth_min_trust_required": round(min_trust, 4),
+            "depth_sovereignty_allowed": bool(policy.get("sovereignty_allowed")),
+            "depth_confirmation_override_allowed": bool(policy.get("confirmation_override_allowed")),
             "microstructure_source": source,
             "dom_event_backed": event_backed,
             "dom_ladder_ready": ladder_ready,
@@ -614,6 +696,9 @@ class PlaybookService:
     def _generic_flow_source(self, context_profile: Dict[str, Any]) -> str:
         if not bool(context_profile.get("true_depth_ready")):
             return "flow"
+        feed_class = str(context_profile.get("depth_feed_class") or "").strip().lower()
+        if feed_class in {"broker_l2", "thin_broker_l2"}:
+            return feed_class
         if bool(context_profile.get("dom_event_backed")) and bool(context_profile.get("dom_ladder_ready")):
             if str(context_profile.get("dom_authority_tier") or "") == "fragmented_event_ladder":
                 return "fragmented_event_ladder"
@@ -646,7 +731,8 @@ class PlaybookService:
         trend_1h = _trend_sign(structure.get("trend_1h"))
         trend_5m = _trend_sign(structure.get("trend_5m"))
         htf_count = int(trend_15m == sign) + int(trend_1h == sign)
-        required_trends = 1 if playbook != "trend_pullback" or bool(context_profile.get("true_depth_ready")) else 2
+        depth_override = bool(context_profile.get("depth_confirmation_override_allowed"))
+        required_trends = 1 if playbook != "trend_pullback" or depth_override else 2
         fast_override = bool(structure.get("fast_entry_confirmation_ready")) or (
             bool(structure.get("trigger_trend_aligned")) and _safe_int(structure.get("fast_entry_confirmation_count"), 0) >= 1
         )
@@ -654,7 +740,7 @@ class PlaybookService:
             fast_override
             or bool(structure.get("trigger_trend_aligned"))
             or trend_5m == sign
-            or bool(context_profile.get("true_depth_ready"))
+            or depth_override
         )
         return {
             "effective_required_trends": required_trends,
@@ -663,6 +749,8 @@ class PlaybookService:
             "fast_confirmation_override": fast_override,
             "trigger_trend_aligned": bool(structure.get("trigger_trend_aligned")) or trend_5m == sign,
             "true_depth_ready": bool(context_profile.get("true_depth_ready")),
+            "depth_confirmation_override_allowed": depth_override,
+            "depth_feed_class": str(context_profile.get("depth_feed_class") or ""),
             "context_support_components": int(context_profile.get("support_components", 0) or 0),
             "context_conflict_components": int(context_profile.get("conflict_components", 0) or 0),
         }
@@ -700,7 +788,7 @@ class PlaybookService:
         extension = _safe_float(structure.get("extension_score"), 0.0)
         impulse_age = _safe_int(structure.get("impulse_age_bars"), 0)
         cluster = _safe_float(structure.get("cluster_penalty"), 0.0)
-        true_depth_ready = bool(context_profile.get("true_depth_ready"))
+        depth_override = bool(context_profile.get("depth_confirmation_override_allowed"))
         trigger_aligned = bool(qualification.get("trigger_trend_aligned"))
 
         if bias == "neutral" and not ("trending_up" in family or "trending_down" in family):
@@ -712,9 +800,9 @@ class PlaybookService:
         if cluster > 0.28:
             return False, f"cluster_risk:{playbook}"
         if playbook == "aggressive_expansion":
-            if not bool(structure.get("entry_confirmation_ready")) and not true_depth_ready:
+            if not bool(structure.get("entry_confirmation_ready")) and not depth_override:
                 return False, "confirmation_pending:aggressive_expansion"
-            if extension > (1.62 if true_depth_ready else 1.35):
+            if extension > (1.62 if depth_override else 1.35):
                 return False, "entry_extended:aggressive_expansion"
 
         if target < 0.08:
@@ -732,7 +820,7 @@ class PlaybookService:
                 "elite_flow_continuation",
                 "breakout_ignition",
             }
-            if not (flow_override or trigger_aligned or qualification["aligned_htf_trends"] >= 1 or true_depth_ready):
+            if not (flow_override or trigger_aligned or qualification["aligned_htf_trends"] >= 1 or depth_override):
                 return False, f"trend_misaligned:{playbook}"
 
         extension_relief = bool(
@@ -745,9 +833,9 @@ class PlaybookService:
             )
             >= 0.24
         )
-        if extension > 1.62 and not (true_depth_ready or extension_relief):
+        if extension > 1.62 and not (depth_override or extension_relief):
             return False, f"entry_extended:{playbook}"
-        if impulse_age > 16 and not (true_depth_ready and context_profile["support_components"] >= 1):
+        if impulse_age > 16 and not (depth_override and context_profile["support_components"] >= 1):
             return False, f"setup_too_old:{playbook}"
         return True, ""
 
@@ -777,7 +865,7 @@ class PlaybookService:
         family = str(structure.get("pattern_family") or "").strip().lower()
         trend_5m_aligned = _trend_sign(structure.get("trend_5m")) == sign
         trigger_aligned = bool(structure.get("trigger_trend_aligned")) or trend_5m_aligned
-        true_depth_ready = bool(context_profile.get("true_depth_ready"))
+        depth_override = bool(context_profile.get("depth_confirmation_override_allowed"))
         support = int(context_profile.get("support_components", 0) or 0)
         conflict = int(context_profile.get("conflict_components", 0) or 0)
         flow = max(
@@ -793,7 +881,7 @@ class PlaybookService:
         notes: List[str] = []
         entry_style = "elite_context_continuation"
         depth_available = bool(context_profile.get("depth_available"))
-        if true_depth_ready and support >= 1 and flow >= 0.20:
+        if depth_override and support >= 1 and flow >= 0.20:
             source = self._generic_flow_source(context_profile)
             notes.append(f"generic_flow_{source}")
             notes.append(f"generic_flow_override={source}")
@@ -808,7 +896,7 @@ class PlaybookService:
             return None
 
         depth_momentum = bool(
-            true_depth_ready
+            depth_override
             and support >= 1
             and flow >= 0.55
             and alignment >= 0.50
@@ -982,7 +1070,9 @@ class PlaybookService:
         price_data: Any,
         context: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
-        ctx = context if isinstance(context, dict) else {}
+        ctx = dict(context) if isinstance(context, dict) else {}
+        ctx.setdefault("asset", asset)
+        ctx.setdefault("category", str(category or "").strip().lower())
         structure = dict(ctx.get("market_structure") or {})
         plan = self._asset_plan(asset, category)
         profile = self._profile(category)
@@ -1063,11 +1153,11 @@ class PlaybookService:
         direction = _structure_direction(structure, context)
         if not direction:
             micro = dict(context.get("market_microstructure") or {})
-            pressure, pressure_ready = _trusted_depth_pressure_score(micro)
+            pressure, pressure_ready = _trusted_depth_pressure_score(micro, asset=asset, category=category)
             if pressure_ready:
                 return "depth_context_pressure_wait:depth_pressure_weak"
             if bool(micro.get("depth_available")):
-                depth = self._depth_readiness(micro)
+                depth = self._depth_readiness(micro, asset=asset, category=category)
                 return f"depth_context_pressure_wait:{depth.get('true_depth_reason') or 'depth_not_ready'}"
             return "depth_context_pressure_wait:no_direction"
         confluence = self._context_directional_confluence(context, direction)

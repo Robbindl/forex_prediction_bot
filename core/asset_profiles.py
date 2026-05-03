@@ -224,6 +224,56 @@ _ASSET_POLICY_OVERRIDES: Dict[str, Dict[str, float | int]] = {
     "ETH-USD": {"max_spread_bps": 18.0},
 }
 
+_EXCHANGE_DEPTH_PROVIDERS = frozenset({"binance", "bybit", "okx"})
+_BROKER_L2_PROVIDERS = frozenset({"ctrader", "dukascopy", "ig", "deriv"})
+
+_DEPTH_FEED_POLICIES: Dict[str, Dict[str, float | int | bool | str]] = {
+    "exchange_deep": {
+        "depth_feed_class": "exchange_deep",
+        "min_levels": 5,
+        "preferred_levels": 20,
+        "min_quality": 0.45,
+        "min_trust": 0.64,
+        "support_min": 0.18,
+        "conflict_block": 0.22,
+        "sovereignty_allowed": True,
+        "confirmation_override_allowed": True,
+    },
+    "broker_l2": {
+        "depth_feed_class": "broker_l2",
+        "min_levels": 5,
+        "preferred_levels": 10,
+        "min_quality": 0.32,
+        "min_trust": 0.50,
+        "support_min": 0.14,
+        "conflict_block": 0.32,
+        "sovereignty_allowed": False,
+        "confirmation_override_allowed": False,
+    },
+    "thin_broker_l2": {
+        "depth_feed_class": "thin_broker_l2",
+        "min_levels": 2,
+        "preferred_levels": 4,
+        "min_quality": 0.24,
+        "min_trust": 0.48,
+        "support_min": 0.18,
+        "conflict_block": 0.38,
+        "sovereignty_allowed": False,
+        "confirmation_override_allowed": False,
+    },
+    "quote_only": {
+        "depth_feed_class": "quote_only",
+        "min_levels": 0,
+        "preferred_levels": 0,
+        "min_quality": 1.0,
+        "min_trust": 1.0,
+        "support_min": 1.0,
+        "conflict_block": 1.0,
+        "sovereignty_allowed": False,
+        "confirmation_override_allowed": False,
+    },
+}
+
 
 def canonical_asset(asset: str) -> str:
     raw = str(asset or "").strip()
@@ -300,6 +350,65 @@ def get_execution_policy(asset: str) -> Dict[str, float | int]:
     policy.update(_CATEGORY_MARKET_COSTS.get(profile.category, {}))
     policy.update(_ASSET_POLICY_OVERRIDES.get(canonical, {}))
     policy["asset_universe_size"] = len(ALL_ASSETS)
+    return policy
+
+
+def classify_depth_feed(
+    *,
+    asset: str = "",
+    category: str = "",
+    provider: str = "",
+    provider_class: str = "",
+    source: str = "",
+    depth_available: bool = False,
+    synthetic_depth: bool = False,
+    levels: int = 0,
+) -> str:
+    """Classify DOM source capability without comparing unrelated venues."""
+
+    if synthetic_depth:
+        return "synthetic"
+    if not depth_available or int(levels or 0) <= 0:
+        return "quote_only"
+
+    provider_key = str(provider or "").strip().lower()
+    class_key = str(provider_class or "").strip().lower()
+    source_key = str(source or "").strip().lower()
+    resolved_category = str(category or get_profile(asset).category or "").strip().lower()
+
+    if (
+        class_key in {"exchange", "exchange_depth", "exchange_deep"}
+        or provider_key in _EXCHANGE_DEPTH_PROVIDERS
+        or any(token in source_key for token in _EXCHANGE_DEPTH_PROVIDERS)
+    ):
+        return "exchange_deep"
+
+    if class_key == "redis_subscriber" and resolved_category == "crypto":
+        return "exchange_deep"
+
+    if (
+        class_key in {"broker_l2", "sidecar"}
+        or provider_key in _BROKER_L2_PROVIDERS
+        or any(token in source_key for token in _BROKER_L2_PROVIDERS)
+    ):
+        return "broker_l2" if int(levels or 0) >= 5 else "thin_broker_l2"
+
+    return "broker_l2" if resolved_category in {"forex", "indices"} else "exchange_deep"
+
+
+def get_depth_feed_policy(
+    asset: str,
+    category: str = "",
+    feed_class: str = "",
+) -> Dict[str, float | int | bool | str]:
+    feed_key = str(feed_class or "").strip().lower()
+    if feed_key == "synthetic":
+        feed_key = "quote_only"
+    policy = dict(_DEPTH_FEED_POLICIES.get(feed_key) or _DEPTH_FEED_POLICIES["quote_only"])
+    resolved_category = str(category or get_profile(asset).category or "").strip().lower()
+    if resolved_category in {"forex", "indices"} and policy["depth_feed_class"] == "exchange_deep":
+        # Do not let proxy or mislabeled broker data be judged as Binance-style depth.
+        policy = dict(_DEPTH_FEED_POLICIES["broker_l2"])
     return policy
 
 

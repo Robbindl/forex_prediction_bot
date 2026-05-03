@@ -511,7 +511,8 @@ class CTraderLiveDepthBridge:
             "environment": str(snapshot.get("environment") or self._environment or "demo"),
             "asset": canonical,
             "depth_provider": "IC Markets cTrader",
-            "depth_provider_class": "sidecar",
+            "depth_provider_class": "broker_l2",
+            "depth_transport_class": "sidecar",
             "depth_environment": str(snapshot.get("environment") or self._environment or "demo"),
             "depth_provider_trust_score": (
                 0.78
@@ -559,6 +560,9 @@ class CTraderLiveDepthBridge:
         payload["depth_available"] = bool((metrics or {}).get("depth_available")) or bool(top_bids or top_asks)
         payload["synthetic_depth_available"] = bool((metrics or {}).get("synthetic_depth_available"))
         payload["depth_levels"] = int((metrics or {}).get("depth_levels") or max(len(top_bids), len(top_asks)))
+        payload["depth_feed_class"] = "broker_l2" if payload["depth_available"] else "quote_only"
+        payload["depth_normalization_scope"] = f"{canonical}:ctrader:{payload['depth_feed_class']}"
+        payload["depth_max_expected_levels"] = 10
         payload["microstructure_source"] = "ctrader_live_depth" if payload["depth_available"] else str(
             (metrics or {}).get("microstructure_source") or "ctrader_live"
         )

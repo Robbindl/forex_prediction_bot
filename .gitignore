@@ -310,6 +310,8 @@ test_*.py
 *_test.py
 conftest.py
 pytest.ini
+!tests/
+!tests/test_source_aware_depth.py
 
 # TEMPORARY WORKING DIRECTORIES
 # ------------------------------------------------

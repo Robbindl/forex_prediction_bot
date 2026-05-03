@@ -19,6 +19,7 @@ from config.config import (
     get_trading_timeframe,
 )
 from data.cache import Cache
+from core.asset_profiles import classify_depth_feed
 from utils.logger import get_logger
 
 logger = get_logger()
@@ -675,14 +676,16 @@ class DataFetcher:
         trust = 0.65
         if source_class == "redis_subscriber" or "orderflow" in provider:
             trust = 0.90
-        elif source_class == "exchange_depth" or any(
+        elif source_class in {"exchange", "exchange_depth", "exchange_deep"} or any(
             token in provider for token in ("binance", "bybit", "okx")
         ):
             trust = 0.88
         elif "dukascopy" in provider:
-            trust = 0.92
+            trust = 0.78
         elif "ctrader" in provider:
             trust = 0.78
+        elif source_class in {"broker_l2", "sidecar"}:
+            trust = 0.72
 
         if "ctrader" in provider and environment and environment not in {"live", "real", "production"}:
             trust = min(trust, 0.58)
@@ -752,7 +755,20 @@ class DataFetcher:
             0.0,
             DataFetcher._coerce_float(extra.get("bid_vol")) + DataFetcher._coerce_float(extra.get("ask_vol")),
         )
-        informative = int(depth_levels >= 2 and signal_strength >= 0.06)
+        feed_class = str(extra.get("depth_feed_class") or "").strip().lower()
+        if not feed_class:
+            feed_class = classify_depth_feed(
+                asset=str(extra.get("asset") or ""),
+                category=str(extra.get("category") or extra.get("market") or ""),
+                provider=str(extra.get("depth_provider") or extra.get("source") or ""),
+                provider_class=str(extra.get("depth_provider_class") or extra.get("source_class") or ""),
+                source=str(extra.get("microstructure_source") or ""),
+                depth_available=bool(extra.get("depth_available")),
+                synthetic_depth=bool(extra.get("synthetic_depth_available")),
+                levels=depth_levels,
+            )
+        min_informative_levels = 5 if feed_class == "broker_l2" else 2
+        informative = int(depth_levels >= min_informative_levels and signal_strength >= 0.06)
         return informative, round(signal_strength, 6), round(total_visible_volume, 6)
 
     @staticmethod
@@ -784,7 +800,19 @@ class DataFetcher:
 
         def _attach_overlay_meta(target: Dict[str, Any]) -> Dict[str, Any]:
             external_provider = str(extra.get("depth_provider") or extra.get("source") or "Dukascopy")
-            external_class = str(extra.get("source_class") or extra.get("depth_provider_class") or "sidecar")
+            external_class = str(extra.get("depth_provider_class") or extra.get("source_class") or "sidecar")
+            external_feed_class = str(extra.get("depth_feed_class") or "").strip().lower()
+            if not external_feed_class:
+                external_feed_class = classify_depth_feed(
+                    asset=str(extra.get("asset") or target.get("asset") or ""),
+                    category=str(extra.get("category") or target.get("category") or ""),
+                    provider=external_provider,
+                    provider_class=external_class,
+                    source=str(extra.get("microstructure_source") or ""),
+                    depth_available=bool(extra.get("depth_available")),
+                    synthetic_depth=bool(extra.get("synthetic_depth_available")),
+                    levels=int(extra.get("depth_levels") or 0),
+                )
             if preserve_base_depth:
                 target.setdefault("depth_provider", str(target.get("source") or target.get("provider") or ""))
                 target.setdefault("depth_provider_class", str(target.get("source_class") or ""))
@@ -795,6 +823,7 @@ class DataFetcher:
                 target.setdefault("depth_quote_alignment_score", 0.86)
                 target["external_depth_provider"] = external_provider
                 target["external_depth_provider_class"] = external_class
+                target["external_depth_feed_class"] = external_feed_class
                 target["external_depth_environment"] = str(extra.get("environment") or "")
                 target["external_depth_as_of_utc"] = str(extra.get("as_of_utc") or "")
                 target["external_depth_live_age_seconds"] = extra.get("depth_live_age_seconds")
@@ -806,6 +835,11 @@ class DataFetcher:
             else:
                 target["depth_provider"] = external_provider
                 target["depth_provider_class"] = external_class
+                target["depth_feed_class"] = external_feed_class
+                target["depth_normalization_scope"] = str(
+                    extra.get("depth_normalization_scope")
+                    or f"{target.get('asset') or extra.get('asset') or ''}:{external_provider}:{external_feed_class}"
+                )
                 target["depth_environment"] = str(extra.get("environment") or target.get("depth_environment") or "")
                 target["depth_as_of_utc"] = str(extra.get("as_of_utc") or target.get("depth_as_of_utc") or "")
                 target["depth_live_age_seconds"] = extra.get("depth_live_age_seconds")
@@ -857,6 +891,9 @@ class DataFetcher:
             "ask_level_count",
             "depth_quality",
             "depth_quality_tier",
+            "depth_feed_class",
+            "depth_normalization_scope",
+            "depth_max_expected_levels",
             "quote_updates",
             "score",
             "bid_vol",

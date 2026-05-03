@@ -480,6 +480,19 @@ class LiveMicrostructureService:
         velocity = _clip(_safe_float(series.get("velocity_bps"), 0.0) / 8.0)
         score = _clip(book * 0.48 + flow * 0.26 + tick * 0.16 + velocity * 0.10)
 
+        exchange_provider = provider_key in {"binance", "bybit", "okx"}
+        broker_l2_provider = provider_key in {"ctrader", "dukascopy", "ig", "deriv"}
+        depth_available = bool(depth.get("depth_available"))
+        if not depth_available:
+            feed_class = "quote_only"
+        elif exchange_provider:
+            feed_class = "exchange_deep"
+        elif broker_l2_provider:
+            depth_levels = int(depth.get("depth_levels", 0) or 0)
+            feed_class = "broker_l2" if depth_levels >= 5 else "thin_broker_l2"
+        else:
+            feed_class = "unknown"
+
         payload: Dict[str, Any] = {
             "provider": provider_key,
             "asset": asset_key,
@@ -488,15 +501,23 @@ class LiveMicrostructureService:
             "ask": ask_value,
             "spread": round(raw_spread, 8),
             "spread_bps": round(spread_bps, 4),
-            "microstructure_source": f"{provider_key}_live_depth" if depth.get("depth_available") else provider_key,
+            "microstructure_source": f"{provider_key}_live_depth" if depth_available else provider_key,
             "depth_provider": provider_key,
-            "depth_provider_class": "exchange"
-            if provider_key in {"binance", "bybit", "okx"}
-            else "sidecar"
-            if provider_key in {"ctrader", "dukascopy", "ig", "deriv"}
+            "depth_provider_class": "exchange_depth"
+            if exchange_provider
+            else "broker_l2"
+            if broker_l2_provider
             else "unknown",
-            "depth_provider_trust_score": 0.82
-            if provider_key in {"binance", "bybit", "okx", "ctrader", "dukascopy", "ig"}
+            "depth_transport_class": "sidecar" if broker_l2_provider else "",
+            "depth_feed_class": feed_class,
+            "depth_normalization_scope": f"{asset_key}:{provider_key}:{feed_class}",
+            "depth_max_expected_levels": 1000 if exchange_provider else 10 if broker_l2_provider else 0,
+            "depth_provider_trust_score": 0.88
+            if exchange_provider
+            else 0.78
+            if provider_key in {"dukascopy", "ig"}
+            else 0.58
+            if provider_key == "ctrader"
             else 0.62,
             "depth_quote_alignment_score": 1.0,
             "depth_quote_agreement_state": "aligned",
