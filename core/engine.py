@@ -2393,16 +2393,28 @@ class TradingCore:
                 logger.debug(f"[TradingCore] Winner add-on sizing error for {signal.asset}: {_addon_err}")
         return signal_dict
 
-    def _apply_crypto_order_flow_gate(
+    def _apply_universal_order_flow_gate(
         self,
         signal: Signal,
         signal_dict: Dict[str, Any],
     ) -> Optional[Dict[str, Any]]:
-        # Order Flow Intelligence: Check liquidation walls & stop hunts
-        # This validator remains crypto-only. Non-crypto assets can still carry
-        # true depth through market_microstructure (for example Dukascopy DOM).
-        if signal.category != "crypto":
-            return signal_dict
+        # Any asset carrying trusted depth can be blocked by hostile book
+        # pressure, while provider-specific validators are optional add-ons.
+        metadata = signal.metadata if isinstance(signal.metadata, dict) else {}
+        micro = metadata.get("market_microstructure") if isinstance(metadata.get("market_microstructure"), dict) else {}
+        direction_sign = 1 if str(signal.direction or "").upper() == "BUY" else -1 if str(signal.direction or "").upper() == "SELL" else 0
+        try:
+            depth_available = bool(micro.get("depth_available") or metadata.get("depth_available"))
+            synthetic_depth = bool(micro.get("synthetic_depth_available") or metadata.get("synthetic_depth_available"))
+            book = float(micro.get("book_imbalance", metadata.get("book_imbalance", 0.0)) or 0.0) * direction_sign
+            flow = float(micro.get("score", metadata.get("microstructure_alignment", 0.0)) or 0.0) * direction_sign
+            quality = float(micro.get("depth_quality", metadata.get("depth_quality", 0.0)) or 0.0)
+            trust = float(micro.get("depth_provider_trust_score", metadata.get("depth_provider_trust_score", 0.0)) or 0.0)
+            if depth_available and not synthetic_depth and max(book, flow) <= -0.24 and quality >= 0.20 and trust >= 0.42:
+                logger.warning(f"[TradingCore] Depth gate blocked {signal.asset}: hostile book pressure")
+                return None
+        except Exception:
+            pass
 
         try:
             from order_flow import get_validator
@@ -2489,7 +2501,7 @@ class TradingCore:
             return False
 
         signal_dict = self._build_executable_signal_payload(signal)
-        signal_dict = self._apply_crypto_order_flow_gate(signal, signal_dict) or {}
+        signal_dict = self._apply_universal_order_flow_gate(signal, signal_dict) or {}
         if not signal_dict:
             return False
 

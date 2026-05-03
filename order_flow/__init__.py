@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import threading
 import time
 from pathlib import Path
@@ -29,7 +30,8 @@ _subscribed = False
 _last_subscribed_at = 0.0
 _last_message_at = 0.0
 _last_error = ""
-_snapshot_store_path = Path("data/order_flow_snapshots.json")
+_REPO_ROOT = Path(__file__).resolve().parents[1]
+_snapshot_store_path = _REPO_ROOT / "data" / "order_flow_snapshots.json"
 _snapshot_store_lock = threading.RLock()
 _snapshot_store: Dict[str, dict] = {}
 _snapshot_store_mtime = 0.0
@@ -71,15 +73,26 @@ def _load_snapshot_store(*, force: bool = False) -> None:
     if not force and mtime == _snapshot_store_mtime:
         return
 
-    loaded: Dict[str, dict] = {}
-    if mtime > 0.0:
-        try:
-            raw = json.loads(path.read_text(encoding="utf-8"))
-            if isinstance(raw, dict):
-                loaded = {str(asset): dict(snapshot or {}) for asset, snapshot in raw.items() if isinstance(snapshot, dict)}
-        except Exception as exc:
-            logger.debug(f"[OrderFlow] Snapshot store load failed: {exc}")
-            loaded = {}
+    if mtime <= 0.0:
+        return
+
+    try:
+        raw_text = path.read_text(encoding="utf-8")
+        if "\x00" in raw_text:
+            raw_text = raw_text.replace("\x00", "").strip()
+            if not raw_text:
+                raise ValueError("snapshot store contains only NUL bytes")
+        raw = json.loads(raw_text)
+        loaded: Dict[str, dict] = {}
+        if isinstance(raw, dict):
+            loaded = {
+                str(asset): dict(snapshot or {})
+                for asset, snapshot in raw.items()
+                if isinstance(snapshot, dict)
+            }
+    except Exception as exc:
+        logger.warning(f"[OrderFlow] Ignoring corrupt snapshot store; keeping live memory: {exc}")
+        return
 
     with _snapshot_store_lock:
         _snapshot_store.clear()
@@ -102,8 +115,15 @@ def _persist_snapshot(asset: str, snapshot: dict, *, force: bool = False) -> Non
         should_write = force or (now - _snapshot_store_last_write >= _SNAPSHOT_STORE_WRITE_MIN_INTERVAL)
         if not should_write:
             return
+        tmp_path = path.with_name(
+            f".{path.name}.{os.getpid()}.{threading.get_ident()}.tmp"
+        )
         try:
-            path.write_text(json.dumps(_snapshot_store, ensure_ascii=True), encoding="utf-8")
+            tmp_path.write_text(
+                json.dumps(dict(_snapshot_store), ensure_ascii=True, separators=(",", ":")),
+                encoding="utf-8",
+            )
+            tmp_path.replace(path)
             _snapshot_store_last_write = now
             try:
                 _snapshot_store_mtime = path.stat().st_mtime
@@ -111,6 +131,10 @@ def _persist_snapshot(asset: str, snapshot: dict, *, force: bool = False) -> Non
                 _snapshot_store_mtime = now
         except Exception as exc:
             logger.debug(f"[OrderFlow] Snapshot store persist failed: {exc}")
+            try:
+                tmp_path.unlink(missing_ok=True)
+            except Exception:
+                pass
 
 
 def _get_persisted_snapshot(asset: str) -> dict:

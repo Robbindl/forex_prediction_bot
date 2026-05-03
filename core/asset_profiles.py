@@ -1,34 +1,29 @@
 from __future__ import annotations
+
 from dataclasses import dataclass, field
-from typing import Dict, FrozenSet, Set
+from typing import Any, Dict, FrozenSet
 
-# ── Asset universe ────────────────────────────────────────────────────────────
 
-FOREX_ASSETS: FrozenSet[str] = frozenset({
-    "EUR/USD", "EUR/JPY", "EUR/GBP", "GBP/JPY", "GBP/USD",
-    "AUD/USD", "NZD/USD", "USD/JPY", "USD/CAD", "USD/CHF",
-})
+FOREX_ASSETS: FrozenSet[str] = frozenset(
+    {
+        "EUR/USD",
+        "EUR/JPY",
+        "EUR/GBP",
+        "GBP/JPY",
+        "GBP/USD",
+        "AUD/USD",
+        "NZD/USD",
+        "USD/JPY",
+        "USD/CAD",
+        "USD/CHF",
+    }
+)
 
-US_INDEX_ASSETS: FrozenSet[str] = frozenset({
-    "US30", "US100", "US500",
-})
-
-UK_INDEX_ASSETS: FrozenSet[str] = frozenset({
-    "UK100",
-})
-
-EUROPE_INDEX_ASSETS: FrozenSet[str] = frozenset({
-    "GER40",
-})
-
-AUSTRALIA_INDEX_ASSETS: FrozenSet[str] = frozenset({
-    "AUS200",
-})
-
-JAPAN_INDEX_ASSETS: FrozenSet[str] = frozenset({
-    "JPN225",
-})
-
+US_INDEX_ASSETS: FrozenSet[str] = frozenset({"US30", "US100", "US500"})
+UK_INDEX_ASSETS: FrozenSet[str] = frozenset({"UK100"})
+EUROPE_INDEX_ASSETS: FrozenSet[str] = frozenset({"GER40"})
+AUSTRALIA_INDEX_ASSETS: FrozenSet[str] = frozenset({"AUS200"})
+JAPAN_INDEX_ASSETS: FrozenSet[str] = frozenset({"JPN225"})
 INDEX_ASSETS: FrozenSet[str] = (
     US_INDEX_ASSETS
     | UK_INDEX_ASSETS
@@ -37,495 +32,228 @@ INDEX_ASSETS: FrozenSet[str] = (
     | JAPAN_INDEX_ASSETS
 )
 
-COMMODITY_ASSETS: FrozenSet[str] = frozenset({
-    "XAU/USD",  # Gold
-    "XAG/USD",  # Silver
-    "WTI",      # WTI Crude Oil
-})
+COMMODITY_ASSETS: FrozenSet[str] = frozenset({"XAU/USD", "XAG/USD", "WTI"})
+CRYPTO_ASSETS: FrozenSet[str] = frozenset({"BTC-USD", "ETH-USD", "BNB-USD", "SOL-USD", "XRP-USD"})
+ALL_ASSETS: FrozenSet[str] = FOREX_ASSETS | INDEX_ASSETS | COMMODITY_ASSETS | CRYPTO_ASSETS
 
-CRYPTO_ASSETS: FrozenSet[str] = frozenset({
-    "BTC-USD", "ETH-USD", "BNB-USD", "SOL-USD", "XRP-USD",
-})
+_LEGACY_CANONICAL: Dict[str, str] = {
+    "BTCUSD": "BTC-USD",
+    "BTCUSDT": "BTC-USD",
+    "ETHUSD": "ETH-USD",
+    "ETHUSDT": "ETH-USD",
+    "BNBUSD": "BNB-USD",
+    "BNBUSDT": "BNB-USD",
+    "SOLUSD": "SOL-USD",
+    "SOLUSDT": "SOL-USD",
+    "XRPUSD": "XRP-USD",
+    "XRPUSDT": "XRP-USD",
+    "XAUUSD": "XAU/USD",
+    "XAGUSD": "XAG/USD",
+    "USOIL": "WTI",
+    "WTIUSD": "WTI",
+    "SPX500": "US500",
+    "NAS100": "US100",
+    "DJ30": "US30",
+    "GER40": "GER40",
+    "DE40": "GER40",
+    "UK100": "UK100",
+    "AUS200": "AUS200",
+    "JPN225": "JPN225",
+}
 
-ALL_ASSETS: FrozenSet[str] = (
-    FOREX_ASSETS | INDEX_ASSETS | COMMODITY_ASSETS | CRYPTO_ASSETS
-)
-
-
-# ── Profile dataclass ─────────────────────────────────────────────────────────
 
 @dataclass(frozen=True)
 class AssetProfile:
-    """Immutable profile describing which data sources are valid for an asset."""
-
-    category: str                          # forex | indices | commodities | crypto
-
-    # Decision-engine inputs
-    use_order_flow:    bool = False        # Order book + imbalance
-    use_liquidations:  bool = False        # Liquidation stream
-    use_funding_rates: bool = False        # Funding-rate monitor
-    use_whale_data:    bool = False        # Whale and on-chain intelligence
-    use_aaii:          bool = False        # AAII bullish/bearish survey
-    use_put_call:      bool = False        # Equity put/call ratio
-    use_reddit:        bool = False        # Reddit sentiment
-    use_session_gates: bool = True         # Market-hours gating
-    use_macro_news:    bool = True         # Macro news / economic events
-
-    # Minimum valid inputs required to emit a signal
-    min_valid_layers:  int  = 3
-
-    # Governance source-family lanes that can satisfy the real-source minimum.
-    # Families are counted once each so one category cannot dominate simply by
-    # having more feeds inside the same lane.
+    category: str
+    use_order_flow: bool = True
+    use_liquidations: bool = False
+    use_funding_rates: bool = False
+    use_whale_data: bool = False
+    use_aaii: bool = False
+    use_put_call: bool = False
+    use_reddit: bool = False
+    use_session_gates: bool = True
+    use_macro_news: bool = True
+    min_valid_layers: int = 2
     source_families: tuple[str, ...] = field(default_factory=tuple)
-
-    # News keyword filter for this asset type (used by the sentiment service)
-    news_keywords: tuple = field(default_factory=tuple)
-
-    # Market hours identifier (used by Layer 4 and dashboard)
-    market_hours: str = "unknown"          # forex_24_5 | crypto_24_7 | us_equity | uk_equity | europe_equity | australia_equity | japan_equity | futures
+    news_keywords: tuple[str, ...] = field(default_factory=tuple)
+    market_hours: str = "unknown"
 
 
-# ── Profiles ─────────────────────────────────────────────────────────────────
-
-_FOREX_PROFILE = AssetProfile(
-    category          = "forex",
-    use_order_flow    = False,
-    use_liquidations  = False,
-    use_funding_rates = False,
-    use_whale_data    = False,
-    use_aaii          = False,
-    use_put_call      = False,
-    use_reddit        = False,
-    use_session_gates = True,
-    use_macro_news    = True,
-    min_valid_layers  = 2,
-    source_families   = ("model", "regime", "sentiment", "macro", "positioning", "flow", "cross_asset"),
-    news_keywords     = ("fed", "ecb", "boe", "rba", "inflation", "cpi", "interest rate",
-                         "central bank", "monetary policy", "forex", "currency"),
-    market_hours      = "forex_24_5",
+_BASE_SOURCE_FAMILIES = (
+    "model",
+    "regime",
+    "structure",
+    "sentiment",
+    "macro",
+    "flow",
+    "depth",
+    "cross_asset",
 )
-
-_US_INDEX_PROFILE = AssetProfile(
-    category          = "indices",
-    use_order_flow    = False,
-    use_liquidations  = False,
-    use_funding_rates = False,
-    use_whale_data    = False,
-    use_aaii          = True,    # AAII valid for US indices only
-    use_put_call      = True,    # Put/call valid for US indices only
-    use_reddit        = False,
-    use_session_gates = True,
-    use_macro_news    = True,
-    min_valid_layers  = 2,
-    source_families   = ("model", "regime", "sentiment", "macro", "positioning", "options", "flow", "cross_asset"),
-    news_keywords     = ("earnings", "economy", "gdp", "stocks", "s&p", "nasdaq",
-                         "dow", "fed", "recession", "market", "equities"),
-    market_hours      = "us_equity",
-)
-
-_UK_INDEX_PROFILE = AssetProfile(
-    category          = "indices",
-    use_order_flow    = False,
-    use_liquidations  = False,
-    use_funding_rates = False,
-    use_whale_data    = False,
-    use_aaii          = False,   # AAII not applicable to UK
-    use_put_call      = False,   # US put/call not applicable to UK
-    use_reddit        = False,
-    use_session_gates = True,
-    use_macro_news    = True,
-    min_valid_layers  = 2,
-    source_families   = ("model", "regime", "sentiment", "macro", "flow", "cross_asset"),
-    news_keywords     = ("ftse", "boe", "uk economy", "british", "gbp", "earnings",
-                         "market", "stocks", "interest rate"),
-    market_hours      = "uk_equity",
-)
-
-_EUROPE_INDEX_PROFILE = AssetProfile(
-    category          = "indices",
-    use_order_flow    = False,
-    use_liquidations  = False,
-    use_funding_rates = False,
-    use_whale_data    = False,
-    use_aaii          = False,
-    use_put_call      = False,
-    use_reddit        = False,
-    use_session_gates = True,
-    use_macro_news    = True,
-    min_valid_layers  = 2,
-    source_families   = ("model", "regime", "sentiment", "macro", "flow", "cross_asset"),
-    news_keywords     = ("dax", "ger40", "germany 40", "bund", "ecb", "eurozone", "german economy", "risk sentiment"),
-    market_hours      = "europe_equity",
-)
-
-_AUSTRALIA_INDEX_PROFILE = AssetProfile(
-    category          = "indices",
-    use_order_flow    = False,
-    use_liquidations  = False,
-    use_funding_rates = False,
-    use_whale_data    = False,
-    use_aaii          = False,
-    use_put_call      = False,
-    use_reddit        = False,
-    use_session_gates = True,
-    use_macro_news    = True,
-    min_valid_layers  = 2,
-    source_families   = ("model", "regime", "sentiment", "macro", "flow", "cross_asset"),
-    news_keywords     = ("australia 200", "aus200", "asx", "rba", "australian economy", "commodities", "china growth"),
-    market_hours      = "australia_equity",
-)
-
-_JAPAN_INDEX_PROFILE = AssetProfile(
-    category          = "indices",
-    use_order_flow    = False,
-    use_liquidations  = False,
-    use_funding_rates = False,
-    use_whale_data    = False,
-    use_aaii          = False,
-    use_put_call      = False,
-    use_reddit        = False,
-    use_session_gates = True,
-    use_macro_news    = True,
-    min_valid_layers  = 2,
-    source_families   = ("model", "regime", "sentiment", "macro", "flow", "cross_asset"),
-    news_keywords     = ("nikkei", "jpn225", "japan 225", "boj", "bank of japan", "yen", "japanese economy"),
-    market_hours      = "japan_equity",
-)
-
-_COMMODITY_PROFILE = AssetProfile(
-    category          = "commodities",
-    use_order_flow    = False,
-    use_liquidations  = False,
-    use_funding_rates = False,
-    use_whale_data    = False,
-    use_aaii          = False,
-    use_put_call      = False,
-    use_reddit        = False,
-    use_session_gates = True,
-    use_macro_news    = True,
-    min_valid_layers  = 2,
-    source_families   = ("model", "regime", "sentiment", "macro", "positioning", "flow", "cross_asset"),
-    news_keywords     = ("oil", "gold", "silver", "commodity", "supply", "demand",
-                         "inventory", "opec", "fed", "dollar", "inflation"),
-    market_hours      = "futures",
-)
-
-_CRYPTO_PROFILE = AssetProfile(
-    category          = "crypto",
-    use_order_flow    = True,
-    use_liquidations  = True,
-    use_funding_rates = True,
-    use_whale_data    = True,
-    use_aaii          = False,
-    use_put_call      = False,
-    use_reddit        = True,
-    use_session_gates = False,   # Crypto is 24/7
-    use_macro_news    = True,
-    min_valid_layers  = 2,       # Fewer required layers (crypto is fast-moving)
-    source_families   = ("model", "regime", "sentiment", "flow", "derivatives", "positioning", "cross_asset"),
-    news_keywords     = ("bitcoin", "ethereum", "crypto", "blockchain", "defi",
-                         "altcoin", "btc", "eth", "binance", "solana", "ripple"),
-    market_hours      = "crypto_24_7",
-)
-
-
-# ── Registry ──────────────────────────────────────────────────────────────────
 
 _PROFILE_REGISTRY: Dict[str, AssetProfile] = {}
 
-_LEGACY_CANONICAL = {
-    "GC=F": "XAU/USD",
-    "SI=F": "XAG/USD",
-    "CL=F": "WTI",
-    "WTI/USD": "WTI",
-    "EURGBP": "EUR/GBP",
-    "NZDUSD": "NZD/USD",
-    "USDCHF": "USD/CHF",
-    "^DJI": "US30",
-    "^IXIC": "US100",
-    "^GSPC": "US500",
-    "^FTSE": "UK100",
-    "DAX": "GER40",
-    "DAX40": "GER40",
-    "DE40": "GER40",
-    "ASX200": "AUS200",
-    "AU200": "AUS200",
-    "JP225": "JPN225",
-    "NIKKEI": "JPN225",
-    "NIKKEI225": "JPN225",
+
+def _register(assets: FrozenSet[str], profile: AssetProfile) -> None:
+    for asset in assets:
+        _PROFILE_REGISTRY[asset] = profile
+
+
+_register(
+    FOREX_ASSETS,
+    AssetProfile(
+        category="forex",
+        source_families=_BASE_SOURCE_FAMILIES + ("positioning",),
+        news_keywords=("central bank", "inflation", "cpi", "rates", "currency", "forex"),
+        market_hours="forex_24_5",
+    ),
+)
+_register(
+    US_INDEX_ASSETS,
+    AssetProfile(
+        category="indices",
+        use_aaii=True,
+        use_put_call=True,
+        source_families=_BASE_SOURCE_FAMILIES + ("options", "equity_breadth"),
+        news_keywords=("fed", "nasdaq", "s&p", "dow", "earnings", "stocks", "risk sentiment"),
+        market_hours="us_equity",
+    ),
+)
+_register(
+    UK_INDEX_ASSETS,
+    AssetProfile(
+        category="indices",
+        source_families=_BASE_SOURCE_FAMILIES + ("equity_breadth",),
+        news_keywords=("ftse", "boe", "uk economy", "gbp", "risk sentiment"),
+        market_hours="uk_equity",
+    ),
+)
+_register(
+    EUROPE_INDEX_ASSETS,
+    AssetProfile(
+        category="indices",
+        source_families=_BASE_SOURCE_FAMILIES + ("equity_breadth",),
+        news_keywords=("dax", "ecb", "eurozone", "bund", "germany", "risk sentiment"),
+        market_hours="europe_equity",
+    ),
+)
+_register(
+    AUSTRALIA_INDEX_ASSETS,
+    AssetProfile(
+        category="indices",
+        source_families=_BASE_SOURCE_FAMILIES + ("equity_breadth",),
+        news_keywords=("asx", "australia", "rba", "risk sentiment"),
+        market_hours="australia_equity",
+    ),
+)
+_register(
+    JAPAN_INDEX_ASSETS,
+    AssetProfile(
+        category="indices",
+        source_families=_BASE_SOURCE_FAMILIES + ("equity_breadth",),
+        news_keywords=("nikkei", "boj", "yen", "japan", "risk sentiment"),
+        market_hours="japan_equity",
+    ),
+)
+_register(
+    COMMODITY_ASSETS,
+    AssetProfile(
+        category="commodities",
+        source_families=_BASE_SOURCE_FAMILIES + ("inventory", "dollar", "rates"),
+        news_keywords=("oil", "gold", "silver", "inventory", "opec", "dollar", "yields"),
+        market_hours="futures",
+    ),
+)
+_register(
+    CRYPTO_ASSETS,
+    AssetProfile(
+        category="crypto",
+        use_liquidations=True,
+        use_funding_rates=True,
+        use_whale_data=True,
+        use_session_gates=False,
+        source_families=_BASE_SOURCE_FAMILIES + ("funding", "liquidations", "onchain"),
+        news_keywords=("bitcoin", "ethereum", "crypto", "stablecoin", "risk sentiment"),
+        market_hours="crypto_24_7",
+    ),
+)
+
+
+_UNIVERSAL_EXECUTION_POLICY: Dict[str, float | int] = {
+    "min_confidence": 0.55,
+    "min_final_confidence": 0.58,
+    "min_rr": 1.45,
+    "target_rr": 1.80,
+    "max_spread": 0.0035,
+    "max_spread_bps": 18.0,
+    "structure_min_alignment": 0.24,
+    "structure_min_setup": 0.30,
+    "entry_confirm_bars": 1,
+    "max_extension_score": 1.18,
+    "max_impulse_age_bars": 6,
+    "min_target_efficiency": 0.18,
+    "depth_required_when_available": 1,
+    "minimum_usable_true_depth_quality": 0.24,
+    "preferred_true_depth_min_quality": 0.36,
+    "minimum_usable_true_depth_trust_score": 0.50,
+    "preferred_true_depth_min_trust_score": 0.60,
+    "snapshot_true_depth_min_levels": 2,
+    "event_ladder_min_levels": 2,
+    "depth_support_min": 0.18,
+    "depth_conflict_block": 0.22,
+    "depth_sovereignty_min_directional_flow": 0.28,
+    "dom_stream_health_floor": 0.35,
+    "dom_stream_hard_floor": 0.30,
+    "scorecard_min_score": 0.56,
+    "cooldown_minutes": 12,
 }
 
-_DEFAULT_EXECUTION_POLICY: Dict[str, float | int] = {
-    "risk_kill_threshold": 0.58,
-    "weak_candle_extension_limit": 1.25,
-    "weak_candle_floor": 0.26,
-    "target_efficiency_hard_floor": 0.15,
-    "opposing_distance_hard_floor": 0.0035,
-    "impulse_age_hard_limit": 6,
-    "directional_extension_hard_limit": 0.74,
-    "pattern_rank_hard_floor": 0.12,
-    "pattern_rank_strong_floor": 0.08,
-    "preferred_true_depth_min_quality": 0.50,
-    "minimum_usable_true_depth_quality": 0.0,
-    "preferred_true_depth_min_trust_score": 0.78,
-    "snapshot_true_depth_min_levels": 50,
-    "minimum_usable_true_depth_trust_score": 0.60,
-    "true_depth_bonus": 0.03,
-    "thin_true_depth_penalty": 0.0,
-    "low_trust_true_depth_penalty": 0.03,
-    "misaligned_true_depth_penalty": 0.05,
-    "synthetic_depth_penalty": 0.04,
-    "asset_edge_bonus_scale": 0.08,
-    "asset_edge_penalty_scale": 0.09,
-    "book_edge_bonus_scale": 0.06,
-    "book_edge_penalty_scale": 0.07,
-    "depth_sovereignty_min_directional_flow": 0.22,
-    "depth_sovereignty_min_true_depth_support": 0.12,
-    "depth_sovereignty_min_component": 0.18,
-    "guarded_force_entry_enabled": 0,
-    "guarded_force_min_directional_flow": 0.34,
-    "guarded_force_min_book_pressure": 0.24,
-    "guarded_force_min_alignment": 0.50,
-    "guarded_force_min_setup_quality": 0.48,
-    "guarded_force_min_target_efficiency": 0.12,
-    "guarded_force_max_extension_score": 1.24,
-    "guarded_force_max_directional_extension": 0.84,
-    "guarded_force_max_stop_hunt_risk": 0.48,
-    "guarded_force_risk_relief": 0.18,
-    "htf_depth_override_penalty": 0.015,
-    "dom_stream_health_min_score_for_sovereignty": 0.58,
-    "dom_stream_health_hard_floor": 0.34,
-    "dom_stream_trust_penalty_scale": 0.60,
-    "dom_stream_degraded_penalty": 0.12,
+_CATEGORY_MARKET_COSTS: Dict[str, Dict[str, float | int]] = {
+    "forex": {"max_spread": 0.0025, "max_spread_bps": 12.0},
+    "indices": {"max_spread": 0.0045, "max_spread_bps": 24.0},
+    "commodities": {"max_spread": 0.0040, "max_spread_bps": 22.0},
+    "crypto": {"max_spread": 0.0035, "max_spread_bps": 18.0},
 }
 
-_CATEGORY_EXECUTION_POLICIES: Dict[str, Dict[str, float | int]] = {
-    "forex": {
-        "risk_kill_threshold": 0.60,
-        "weak_candle_extension_limit": 1.28,
-        "weak_candle_floor": 0.25,
-        "target_efficiency_hard_floor": 0.14,
-        "opposing_distance_hard_floor": 0.0032,
-        "directional_extension_hard_limit": 0.76,
-        "pattern_rank_hard_floor": 0.10,
-        "pattern_rank_strong_floor": 0.06,
-        "minimum_usable_true_depth_quality": 0.25,
-        "preferred_true_depth_min_trust_score": 0.80,
-        "minimum_usable_true_depth_trust_score": 0.60,
-        "true_depth_bonus": 0.02,
-        "thin_true_depth_penalty": 0.03,
-        "low_trust_true_depth_penalty": 0.03,
-        "misaligned_true_depth_penalty": 0.05,
-        "synthetic_depth_penalty": 0.02,
-        "asset_edge_bonus_scale": 0.09,
-        "guarded_force_entry_enabled": 1,
-        "guarded_force_min_directional_flow": 0.32,
-        "guarded_force_min_book_pressure": 0.22,
-        "guarded_force_min_alignment": 0.58,
-        "guarded_force_min_setup_quality": 0.54,
-        "guarded_force_min_target_efficiency": 0.14,
-        "guarded_force_max_extension_score": 1.18,
-        "guarded_force_max_directional_extension": 0.78,
-        "guarded_force_max_stop_hunt_risk": 0.44,
-        "dom_stream_health_min_score_for_sovereignty": 0.56,
-        "dom_stream_health_hard_floor": 0.32,
-        "dom_stream_trust_penalty_scale": 0.58,
-    },
-    "indices": {
-        "risk_kill_threshold": 0.59,
-        "weak_candle_extension_limit": 1.27,
-        "weak_candle_floor": 0.25,
-        "target_efficiency_hard_floor": 0.14,
-        "opposing_distance_hard_floor": 0.0033,
-        "directional_extension_hard_limit": 0.75,
-        "pattern_rank_hard_floor": 0.10,
-        "pattern_rank_strong_floor": 0.07,
-        "minimum_usable_true_depth_quality": 0.25,
-        "preferred_true_depth_min_trust_score": 0.78,
-        "minimum_usable_true_depth_trust_score": 0.60,
-        "true_depth_bonus": 0.03,
-        "thin_true_depth_penalty": 0.03,
-        "low_trust_true_depth_penalty": 0.03,
-        "misaligned_true_depth_penalty": 0.05,
-        "synthetic_depth_penalty": 0.03,
-        "guarded_force_entry_enabled": 1,
-        "guarded_force_min_directional_flow": 0.33,
-        "guarded_force_min_book_pressure": 0.23,
-        "guarded_force_min_alignment": 0.58,
-        "guarded_force_min_setup_quality": 0.54,
-        "guarded_force_min_target_efficiency": 0.14,
-        "guarded_force_max_extension_score": 1.18,
-        "guarded_force_max_directional_extension": 0.78,
-        "guarded_force_max_stop_hunt_risk": 0.45,
-        "dom_stream_health_min_score_for_sovereignty": 0.57,
-        "dom_stream_health_hard_floor": 0.33,
-        "dom_stream_trust_penalty_scale": 0.60,
-    },
-    "commodities": {
-        "risk_kill_threshold": 0.55,
-        "weak_candle_extension_limit": 1.20,
-        "weak_candle_floor": 0.28,
-        "target_efficiency_hard_floor": 0.18,
-        "opposing_distance_hard_floor": 0.0040,
-        "impulse_age_hard_limit": 5,
-        "directional_extension_hard_limit": 0.70,
-        "pattern_rank_hard_floor": 0.14,
-        "pattern_rank_strong_floor": 0.10,
-        "preferred_true_depth_min_quality": 0.60,
-        "minimum_usable_true_depth_quality": 0.25,
-        "preferred_true_depth_min_trust_score": 0.82,
-        "minimum_usable_true_depth_trust_score": 0.64,
-        "true_depth_bonus": 0.02,
-        "thin_true_depth_penalty": 0.04,
-        "low_trust_true_depth_penalty": 0.04,
-        "misaligned_true_depth_penalty": 0.06,
-        "synthetic_depth_penalty": 0.06,
-        "asset_edge_bonus_scale": 0.07,
-        "book_edge_bonus_scale": 0.05,
-        "guarded_force_entry_enabled": 1,
-        "guarded_force_min_directional_flow": 0.32,
-        "guarded_force_min_book_pressure": 0.22,
-        "guarded_force_min_alignment": 0.50,
-        "guarded_force_min_setup_quality": 0.48,
-        "guarded_force_min_target_efficiency": 0.16,
-        "guarded_force_max_extension_score": 1.16,
-        "guarded_force_max_directional_extension": 0.74,
-        "guarded_force_max_stop_hunt_risk": 0.44,
-        "dom_stream_health_min_score_for_sovereignty": 0.62,
-        "dom_stream_health_hard_floor": 0.38,
-        "dom_stream_trust_penalty_scale": 0.68,
-        "dom_stream_degraded_penalty": 0.16,
-    },
-    "crypto": {
-        "risk_kill_threshold": 0.56,
-        "weak_candle_extension_limit": 1.30,
-        "weak_candle_floor": 0.24,
-        "target_efficiency_hard_floor": 0.14,
-        "opposing_distance_hard_floor": 0.0032,
-        "directional_extension_hard_limit": 0.76,
-        "pattern_rank_hard_floor": 0.11,
-        "pattern_rank_strong_floor": 0.07,
-        "preferred_true_depth_min_quality": 0.45,
-        "preferred_true_depth_min_trust_score": 0.72,
-        "minimum_usable_true_depth_trust_score": 0.55,
-        "true_depth_bonus": 0.05,
-        "low_trust_true_depth_penalty": 0.02,
-        "misaligned_true_depth_penalty": 0.04,
-        "synthetic_depth_penalty": 0.07,
-        "asset_edge_bonus_scale": 0.10,
-        "book_edge_bonus_scale": 0.07,
-        "guarded_force_entry_enabled": 1,
-        "dom_stream_health_min_score_for_sovereignty": 0.60,
-        "dom_stream_health_hard_floor": 0.36,
-        "dom_stream_trust_penalty_scale": 0.65,
-        "dom_stream_degraded_penalty": 0.14,
-    },
-    "unknown": {},
+_ASSET_POLICY_OVERRIDES: Dict[str, Dict[str, float | int]] = {
+    "XAU/USD": {"max_spread_bps": 20.0},
+    "XAG/USD": {"max_spread_bps": 26.0},
+    "WTI": {"max_spread_bps": 24.0},
+    "US100": {"max_spread_bps": 28.0},
+    "BTC-USD": {"max_spread_bps": 16.0},
+    "ETH-USD": {"max_spread_bps": 18.0},
 }
 
-_ASSET_EXECUTION_POLICY_OVERRIDES: Dict[str, Dict[str, float | int]] = {
-    "US100": {
-        "risk_kill_threshold": 0.61,
-        "weak_candle_extension_limit": 1.31,
-        "pattern_rank_hard_floor": 0.09,
-    },
-    "US500": {
-        "risk_kill_threshold": 0.60,
-        "weak_candle_extension_limit": 1.29,
-        "pattern_rank_hard_floor": 0.09,
-    },
-    "XAU/USD": {
-        "risk_kill_threshold": 0.54,
-        "target_efficiency_hard_floor": 0.19,
-        "opposing_distance_hard_floor": 0.0042,
-        "synthetic_depth_penalty": 0.07,
-    },
-    "WTI": {
-        "risk_kill_threshold": 0.53,
-        "target_efficiency_hard_floor": 0.20,
-        "opposing_distance_hard_floor": 0.0044,
-        "impulse_age_hard_limit": 4,
-        "synthetic_depth_penalty": 0.08,
-    },
-    "BTC-USD": {
-        "risk_kill_threshold": 0.57,
-        "weak_candle_extension_limit": 1.32,
-        "true_depth_bonus": 0.06,
-    },
-    "ETH-USD": {
-        "risk_kill_threshold": 0.57,
-        "weak_candle_extension_limit": 1.31,
-        "true_depth_bonus": 0.055,
-    },
-    "BNB-USD": {
-        "risk_kill_threshold": 0.54,
-        "opposing_distance_hard_floor": 0.0036,
-        "synthetic_depth_penalty": 0.09,
-    },
-    "SOL-USD": {
-        "risk_kill_threshold": 0.54,
-        "opposing_distance_hard_floor": 0.0037,
-        "synthetic_depth_penalty": 0.09,
-    },
-    "XRP-USD": {
-        "risk_kill_threshold": 0.53,
-        "opposing_distance_hard_floor": 0.0038,
-        "pattern_rank_hard_floor": 0.12,
-        "synthetic_depth_penalty": 0.10,
-    },
-}
 
-for _asset in FOREX_ASSETS:
-    _PROFILE_REGISTRY[_asset] = _FOREX_PROFILE
-
-for _asset in US_INDEX_ASSETS:
-    _PROFILE_REGISTRY[_asset] = _US_INDEX_PROFILE
-
-for _asset in UK_INDEX_ASSETS:
-    _PROFILE_REGISTRY[_asset] = _UK_INDEX_PROFILE
-
-for _asset in EUROPE_INDEX_ASSETS:
-    _PROFILE_REGISTRY[_asset] = _EUROPE_INDEX_PROFILE
-
-for _asset in AUSTRALIA_INDEX_ASSETS:
-    _PROFILE_REGISTRY[_asset] = _AUSTRALIA_INDEX_PROFILE
-
-for _asset in JAPAN_INDEX_ASSETS:
-    _PROFILE_REGISTRY[_asset] = _JAPAN_INDEX_PROFILE
-
-for _asset in COMMODITY_ASSETS:
-    _PROFILE_REGISTRY[_asset] = _COMMODITY_PROFILE
-
-for _asset in CRYPTO_ASSETS:
-    _PROFILE_REGISTRY[_asset] = _CRYPTO_PROFILE
+def canonical_asset(asset: str) -> str:
+    raw = str(asset or "").strip()
+    upper = raw.upper()
+    if upper in _LEGACY_CANONICAL:
+        return _LEGACY_CANONICAL[upper]
+    if "/" in raw:
+        left, right = raw.split("/", 1)
+        return f"{left.upper()}/{right.upper()}"
+    if "-" in raw:
+        left, right = raw.split("-", 1)
+        return f"{left.upper()}-{right.upper()}"
+    if len(upper) == 6 and upper[:3].isalpha() and upper[3:].isalpha():
+        pair = f"{upper[:3]}/{upper[3:]}"
+        if pair in FOREX_ASSETS or pair in COMMODITY_ASSETS:
+            return pair
+    return upper
 
 
 def get_profile(asset: str) -> AssetProfile:
-    """
-    Return the AssetProfile for a given canonical asset ID.
-    Falls back to a conservative default if the asset is unknown.
-    """
-    canonical = _LEGACY_CANONICAL.get((asset or "").strip().upper(), asset)
-    if canonical == "WTI":
-        return _COMMODITY_PROFILE
+    canonical = canonical_asset(asset)
     return _PROFILE_REGISTRY.get(
         canonical,
         AssetProfile(
-            category          = "unknown",
-            use_order_flow    = False,
-            use_liquidations  = False,
-            use_funding_rates = False,
-            use_whale_data    = False,
-            use_aaii          = False,
-            use_put_call      = False,
-            use_reddit        = False,
-            use_session_gates = True,
-            use_macro_news    = True,
-            min_valid_layers  = 4,
-            source_families   = ("model", "regime", "sentiment", "cross_asset"),
-            market_hours      = "unknown",
-        )
+            category="unknown",
+            use_order_flow=True,
+            source_families=_BASE_SOURCE_FAMILIES,
+            min_valid_layers=2,
+            market_hours="unknown",
+        ),
     )
 
 
@@ -542,37 +270,49 @@ def is_index(asset: str) -> bool:
 
 
 def is_us_index(asset: str) -> bool:
-    canonical = _LEGACY_CANONICAL.get((asset or "").strip().upper(), asset)
-    return canonical in US_INDEX_ASSETS
+    return canonical_asset(asset) in US_INDEX_ASSETS
 
 
 def is_commodity(asset: str) -> bool:
     return get_profile(asset).category == "commodities"
 
+
 def is_uk_index(asset: str) -> bool:
-    canonical = _LEGACY_CANONICAL.get((asset or "").strip().upper(), asset)
-    return canonical in UK_INDEX_ASSETS
+    return canonical_asset(asset) in UK_INDEX_ASSETS
 
 
 def is_europe_index(asset: str) -> bool:
-    canonical = _LEGACY_CANONICAL.get((asset or "").strip().upper(), asset)
-    return canonical in EUROPE_INDEX_ASSETS
+    return canonical_asset(asset) in EUROPE_INDEX_ASSETS
 
 
 def is_australia_index(asset: str) -> bool:
-    canonical = _LEGACY_CANONICAL.get((asset or "").strip().upper(), asset)
-    return canonical in AUSTRALIA_INDEX_ASSETS
+    return canonical_asset(asset) in AUSTRALIA_INDEX_ASSETS
 
 
 def is_japan_index(asset: str) -> bool:
-    canonical = _LEGACY_CANONICAL.get((asset or "").strip().upper(), asset)
-    return canonical in JAPAN_INDEX_ASSETS
+    return canonical_asset(asset) in JAPAN_INDEX_ASSETS
 
 
 def get_execution_policy(asset: str) -> Dict[str, float | int]:
-    canonical = _LEGACY_CANONICAL.get((asset or "").strip().upper(), asset)
+    canonical = canonical_asset(asset)
     profile = get_profile(canonical)
-    policy = dict(_DEFAULT_EXECUTION_POLICY)
-    policy.update(_CATEGORY_EXECUTION_POLICIES.get(profile.category, {}))
-    policy.update(_ASSET_EXECUTION_POLICY_OVERRIDES.get(canonical, {}))
+    policy: Dict[str, float | int] = dict(_UNIVERSAL_EXECUTION_POLICY)
+    policy.update(_CATEGORY_MARKET_COSTS.get(profile.category, {}))
+    policy.update(_ASSET_POLICY_OVERRIDES.get(canonical, {}))
+    policy["asset_universe_size"] = len(ALL_ASSETS)
     return policy
+
+
+def all_asset_categories() -> Dict[str, str]:
+    return {asset: get_profile(asset).category for asset in sorted(ALL_ASSETS)}
+
+
+def profile_payload(asset: str) -> Dict[str, Any]:
+    profile = get_profile(asset)
+    return {
+        "asset": canonical_asset(asset),
+        "category": profile.category,
+        "market_hours": profile.market_hours,
+        "source_families": list(profile.source_families),
+        "use_session_gates": bool(profile.use_session_gates),
+    }
