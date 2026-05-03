@@ -1090,16 +1090,35 @@ def _compress_response(response: Response) -> Response:
     return response
 
 
+_WSGI_HOP_BY_HOP_HEADERS = {
+    "connection",
+    "keep-alive",
+    "proxy-authenticate",
+    "proxy-authorization",
+    "te",
+    "trailer",
+    "transfer-encoding",
+    "upgrade",
+}
+
+
+def _strip_wsgi_hop_by_hop_headers(response: Response) -> Response:
+    for header in tuple(response.headers.keys()):
+        if header.lower() in _WSGI_HOP_BY_HOP_HEADERS:
+            response.headers.pop(header, None)
+    return response
+
+
 @app.after_request
 def _set_api_cache_headers(response: Response) -> Response:
     if request.path.startswith("/api/") and request.method == "GET":
         if request.path == "/api/trade-history" or request.path.startswith("/api/trade-history/"):
-            return _compress_response(response)
+            return _strip_wsgi_hop_by_hop_headers(_compress_response(response))
         if _should_skip_global_api_cache():
             response.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
             response.headers["Pragma"] = "no-cache"
             response.headers["Expires"] = "0"
-            return _compress_response(response)
+            return _strip_wsgi_hop_by_hop_headers(_compress_response(response))
         response.headers.setdefault("Cache-Control", "public, max-age=5, stale-while-revalidate=30")
         if response.status_code == 200 and response.is_json:
             try:
@@ -1112,7 +1131,7 @@ def _set_api_cache_headers(response: Response) -> Response:
         response.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
         response.headers["Pragma"] = "no-cache"
         response.headers["Expires"] = "0"
-    return _compress_response(response)
+    return _strip_wsgi_hop_by_hop_headers(_compress_response(response))
 
 # ── Signal store (background refresh) ────────────────────────────────────────
 _sig_store: Dict[str, Dict] = {}
@@ -5380,7 +5399,6 @@ def api_live_book_stream():
         headers={
             "Cache-Control": "no-cache, no-store, must-revalidate",
             "X-Accel-Buffering": "no",
-            "Connection": "keep-alive",
         },
     )
 
@@ -5419,7 +5437,6 @@ def api_command_center_stream():
         headers={
             "Cache-Control": "no-cache, no-store, must-revalidate",
             "X-Accel-Buffering": "no",
-            "Connection": "keep-alive",
         },
     )
 
@@ -6919,7 +6936,6 @@ def api_live_prices_stream():
         headers={
             "Cache-Control": "no-cache, no-store, must-revalidate",
             "X-Accel-Buffering": "no",
-            "Connection": "keep-alive",
         },
     )
 
