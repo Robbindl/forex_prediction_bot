@@ -31,6 +31,7 @@ data/system_state.json
 data/ctrader_live_depth.json
 data/dukascopy_live_depth.json
 data/order_flow_snapshots.json
+data/runtime_locks/
 .env.local
 *.local
 

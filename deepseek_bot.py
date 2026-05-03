@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import hashlib
 import html
+import os
 import re
 import shutil
 import subprocess
@@ -29,6 +31,59 @@ logger = get_logger()
 _CHAT_TIMEOUT_SECONDS = 60.0
 _MARKDOWNISH_TOKEN_RE = re.compile(r"(```[\s\S]+?```|`[^`\n]+`|\*\*[\s\S]+?\*\*|\*[^\*\n][^\n]*?\*)")
 _ATX_HEADING_RE = re.compile(r"^(\s{0,3})#{1,6}\s+(.+?)\s*$")
+
+
+class _SingleInstanceLock:
+    def __init__(self, token: str):
+        digest = hashlib.sha256(str(token or "").encode("utf-8")).hexdigest()[:16]
+        self.path = Path("data") / "runtime_locks" / f"deepseek_bot_{digest}.lock"
+        self._fd: Optional[int] = None
+
+    def acquire(self) -> bool:
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            self._fd = os.open(str(self.path), os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
+            os.write(self._fd, str(os.getpid()).encode("ascii"))
+            return True
+        except FileExistsError:
+            if self._remove_stale_lock():
+                return self.acquire()
+            return False
+
+    def release(self) -> None:
+        if self._fd is not None:
+            try:
+                os.close(self._fd)
+            except OSError:
+                pass
+            self._fd = None
+        try:
+            self.path.unlink(missing_ok=True)
+        except OSError:
+            pass
+
+    def _remove_stale_lock(self) -> bool:
+        try:
+            pid = int((self.path.read_text(encoding="utf-8").strip() or "0"))
+        except Exception:
+            pid = 0
+        if pid <= 0:
+            try:
+                self.path.unlink(missing_ok=True)
+                return True
+            except OSError:
+                return False
+        try:
+            os.kill(pid, 0)
+            return False
+        except ProcessLookupError:
+            try:
+                self.path.unlink(missing_ok=True)
+                return True
+            except OSError:
+                return False
+        except PermissionError:
+            return False
 
 
 class _SharedRuntimeTradingSystemProxy:
@@ -170,21 +225,29 @@ class DeepSeekTelegramBot:
         if not self.token:
             raise RuntimeError("DeepSeek Telegram token is missing. Set DEEPSEEK_TELEGRAM_TOKEN.")
 
-        self.application = (
-            Application.builder()
-            .token(self.token)
-            .connect_timeout(30)
-            .read_timeout(30)
-            .write_timeout(30)
-            .post_init(self._post_init)
-            .build()
-        )
-        self._register_handlers()
-        self.application.run_polling(
-            allowed_updates=Update.ALL_TYPES,
-            drop_pending_updates=True,
-            stop_signals=None,
-        )
+        lock = _SingleInstanceLock(self.token)
+        if not lock.acquire():
+            logger.error("[DeepSeekBot] another local DeepSeek Telegram poller is already running; exiting")
+            return
+
+        try:
+            self.application = (
+                Application.builder()
+                .token(self.token)
+                .connect_timeout(30)
+                .read_timeout(30)
+                .write_timeout(30)
+                .post_init(self._post_init)
+                .build()
+            )
+            self._register_handlers()
+            self.application.run_polling(
+                allowed_updates=Update.ALL_TYPES,
+                drop_pending_updates=True,
+                stop_signals=None,
+            )
+        finally:
+            lock.release()
 
     def start_background(self) -> None:
         if self._thread and self._thread.is_alive():

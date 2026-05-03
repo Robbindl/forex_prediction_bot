@@ -21,6 +21,12 @@ from utils.logger import TradingLogger, get_logger, prune_stale_log_artifacts
 
 _BOT_ROLE = os.getenv("BOT_ROLE", "").strip().lower()
 _DEEPSEEK_ONLY_MODE = _BOT_ROLE == "deepseek"
+_DEEPSEEK_SIBLING_ENABLED = os.getenv("DEEPSEEK_SIBLING_ENABLED", "0").strip().lower() in {
+    "1",
+    "true",
+    "yes",
+    "on",
+}
 _deepseek_proc: subprocess.Popen | None = None
 
 _trading_logger = TradingLogger(log_dir=str(LOG_DIR), level=LOG_LEVEL)
@@ -41,6 +47,9 @@ def _launch_deepseek_sibling() -> None:
     global _deepseek_proc
 
     if _DEEPSEEK_ONLY_MODE:
+        return
+    if not _DEEPSEEK_SIBLING_ENABLED:
+        logger.info("[bot] DeepSeek sibling not spawned — standalone service owns Telegram polling")
         return
     if not DEEPSEEK_TELEGRAM_TOKEN:
         logger.info("[bot] DeepSeek Telegram bot not started — DEEPSEEK_TELEGRAM_TOKEN missing")
@@ -435,6 +444,9 @@ def _start_deepseek_background_bot() -> None:
     global _deepseek_proc
 
     if _DEEPSEEK_ONLY_MODE:
+        return
+    if not _DEEPSEEK_SIBLING_ENABLED:
+        logger.info("[bot] DeepSeek background bot not spawned — standalone service owns Telegram polling")
         return
 
     from config.config import DEEPSEEK_TELEGRAM_TOKEN

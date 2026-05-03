@@ -11,6 +11,7 @@ User=ubuntu
 Group=ubuntu
 WorkingDirectory=/opt/forex_prediction_bot
 EnvironmentFile=-/opt/forex_prediction_bot/.env
+Environment=DEEPSEEK_SIBLING_ENABLED=0
 Environment=PYTHONUNBUFFERED=1
 ExecStart=/opt/forex_prediction_bot/venv_tf/bin/python bot.py --no-dashboard
 Restart=always
