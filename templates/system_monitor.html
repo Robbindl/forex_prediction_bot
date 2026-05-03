@@ -953,12 +953,22 @@ async function load(){
     // Connections
     const connEl=document.getElementById('connPanel');
     const igBroker=d.ig_broker||{};
-    const providerRouting=((overview.command_center||{}).provider_routing)||{};
-    const universeCount=Number(providerRouting.asset_count||0);
+    const providerRouting=(commandCenter.provider_routing)||overview.provider_routing||d.provider_routing||((overview.command_center||{}).provider_routing)||{};
+    const universeCount=Number(providerRouting.asset_count||commandCenter.assets_cached||overview.assets_cached||d.assets_cached||0);
+    const universeObserved = universeCount > 0
+      || Number(derivFeed.symbol_count||0) > 0
+      || Number(binanceFeed.symbol_count||0) > 0
+      || Number(igFeed.symbol_count||0) > 0;
+    const universeStatus = universeCount > 0 ? 'OK' : universeObserved ? 'Warming' : 'Down';
+    const universeMeta = universeCount
+      ? `${universeCount} tracked assets across routed feeds`
+      : universeObserved
+        ? 'routing snapshot warming'
+        : '';
     const connItems=[
       {name:'Trading Engine',ok:procs['TradingCore'], meta:splitMode ? `split service${d.external_bot_processes ? ` · ${d.external_bot_processes} proc` : ''}` : ''},
       {name:'Web Dashboard',ok:procs['Web dashboard']},
-      {name:'Asset Universe',ok:universeCount>0, meta:universeCount?`${universeCount} tracked assets across routed feeds`:''},
+      {name:'Asset Universe',ok:universeObserved, status:universeStatus, meta:universeMeta},
       {name:'Deriv Routed Quotes',ok:!!derivFeed.connected, meta:derivFeed.symbol_count?`${derivFeed.symbol_count} symbols`:derivFeed.assets||''},
       {name:'Bybit Commodity Depth',ok:bybitConfigured, status:bybitFeed.connected?'OK':bybitConfigured?'Idle':'Down', meta:bybitFeed.symbol_count?`${bybitFeed.symbol_count} symbols`:bybitFeed.assets||''},
       {name:'OKX Commodity Fallback',ok:okxConfigured, status:okxFeed.connected?'OK':okxConfigured?'Idle':'Down', meta:okxFeed.symbol_count?`${okxFeed.symbol_count} symbols`:okxFeed.assets||''},
