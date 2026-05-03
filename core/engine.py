@@ -2001,34 +2001,7 @@ class TradingCore:
         limit: int = 3,
     ) -> List[Signal]:
         max_count = max(1, int(limit or 1))
-        if len(survivors) <= max_count:
-            return survivors[:max_count]
-
-        selected: List[Signal] = []
-        seen_signal_ids: set[int] = set()
-        seen_categories: set[str] = set()
-
-        for signal in survivors:
-            category_key = str(getattr(signal, "category", "") or "").strip().lower()
-            if category_key in seen_categories:
-                continue
-            selected.append(signal)
-            seen_signal_ids.add(id(signal))
-            if category_key:
-                seen_categories.add(category_key)
-            if len(selected) >= max_count:
-                return selected
-
-        for signal in survivors:
-            signal_id = id(signal)
-            if signal_id in seen_signal_ids:
-                continue
-            selected.append(signal)
-            seen_signal_ids.add(signal_id)
-            if len(selected) >= max_count:
-                break
-
-        return selected
+        return survivors[:max_count]
 
     def _execute_ranked_survivors(self, survivors: List[Signal], limit: int = 3) -> int:
         selected_survivors = self._select_execution_survivors(survivors, limit=limit)

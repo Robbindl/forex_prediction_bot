@@ -961,6 +961,7 @@ def _qualify_impulse_candidate(
             "intermarket_break",
             "intermarket_confirmed_break",
             "breakout_close",
+            "breakout_ignition",
         }
         or (
             entry_style_label.endswith("_break")
@@ -995,6 +996,8 @@ def _qualify_impulse_candidate(
         early_relief_candidate_floor = max(0.42, float(profile.breakout_min_score) - 0.16)
     elif entry_style_label == "news_followthrough":
         early_relief_candidate_floor = max(0.42, float(profile.breakout_min_score) - 0.16)
+    elif entry_style_label == "breakout_ignition":
+        early_relief_candidate_floor = max(0.38, float(profile.breakout_min_score) - 0.22)
     elif entry_style_label.startswith("intermarket_") and "pullback" not in entry_style_label and "retest" not in entry_style_label:
         early_relief_candidate_floor = max(0.40, float(profile.breakout_min_score) - 0.18)
     elif family.endswith("liquidity_sweep"):
@@ -1096,6 +1099,19 @@ def _qualify_impulse_candidate(
         and int(candidate.get("conflict_components", 0) or 0) == 0
     )
     if context_pressure_ready:
+        strong_impulse_break = True
+        allow_early_trend_relief = True
+    breakout_ignition_context = bool(
+        entry_style_label == "breakout_ignition"
+        and candidate_score >= early_relief_candidate_floor
+        and int(candidate.get("support_components", 0) or 0) >= 1
+        and int(candidate.get("conflict_components", 0) or 0) == 0
+        and max(cross_strength, micro_strength) >= 0.22
+        and target_efficiency_score >= 0.08
+        and extension_score <= 1.62
+        and impulse_age_bars <= 8
+    )
+    if breakout_ignition_context:
         strong_impulse_break = True
         allow_early_trend_relief = True
     if allow_early_trend_relief:
@@ -2620,6 +2636,7 @@ class PlaybookService:
         fast_entry_confirmation_bars_required = int(structure.get("fast_entry_confirmation_bars_required", 0) or 0)
         fast_entry_confirmation_count = int(structure.get("fast_entry_confirmation_count", 0) or 0)
         pattern_family = seed_state.pattern_family
+        pattern_family_direction = seed_state.pattern_family_direction
         liquidity_sweep_buy = bool(structure.get("liquidity_sweep_buy"))
         liquidity_sweep_sell = bool(structure.get("liquidity_sweep_sell"))
         upside_exhaustion_score = float(structure.get("upside_exhaustion_score", 0.0) or 0.0)
@@ -3038,30 +3055,59 @@ class PlaybookService:
             and impulse_age_bars <= 6
             and cluster_penalty <= 0.18
         )
+        depth_breakout_pattern_driven_ready = bool(
+            pattern_driven_direction
+            and pattern_family_direction == direction
+        )
+        directional_pattern_family_ready = bool(
+            pattern_family_ready
+            and pattern_family_direction == direction
+        )
+        depth_breakout_direction_ready = bool(
+            structure_bias in {"buy", "sell"}
+            or depth_breakout_pattern_driven_ready
+            or directional_pattern_family_ready
+            or (
+                strict_family_directional_match
+                and elite_pattern_rank >= 0.18
+            )
+        )
+        depth_breakout_flow_floor = _safe_float(
+            depth_pressure_profile.get("breakout_ignition_flow_floor"),
+            0.22,
+        )
+        depth_breakout_flow_support = max(
+            abs(micro_context_support),
+            abs(cross_context_support),
+            abs(whale_context_support),
+        )
         depth_breakout_ignition_ready = bool(
             bool(depth_pressure_profile.get("ready"))
-            and pattern_family.endswith("generic")
-            and family_directional_match
-            and structure_bias in {"buy", "sell"}
+            and depth_breakout_direction_ready
+            and (
+                family_directional_match
+                or depth_breakout_pattern_driven_ready
+                or directional_pattern_family_ready
+            )
             and support_components >= 1
             and conflict_components == 0
             and context_depth_ready
             and confluence_score >= _safe_float(depth_pressure_profile.get("breakout_ignition_confluence_floor"), 0.12)
-            and max(
-                abs(micro_context_support),
-                abs(cross_context_support),
-                abs(whale_context_support),
-            )
-            >= _safe_float(depth_pressure_profile.get("breakout_ignition_flow_floor"), 0.22)
-            and alignment_score >= _safe_float(depth_pressure_profile.get("alignment_floor"), 0.42)
-            and setup_quality >= _safe_float(depth_pressure_profile.get("setup_floor"), 0.50)
+            and depth_breakout_flow_support >= depth_breakout_flow_floor
+            and effective_alignment_score >= _safe_float(depth_pressure_profile.get("alignment_floor"), 0.42)
+            and effective_setup_quality >= _safe_float(depth_pressure_profile.get("setup_floor"), 0.50)
             and target_efficiency_score >= _safe_float(depth_pressure_profile.get("breakout_ignition_target_floor"), 0.08)
             and extension_score <= _safe_float(depth_pressure_profile.get("breakout_ignition_extension_ceiling"), 1.38)
             and impulse_age_bars <= int(depth_pressure_profile.get("breakout_ignition_impulse_age_limit", 7) or 7)
             and cluster_penalty <= 0.20
             and (
                 max(directional_breakout, directional_pullback) >= 0.06
-                or micro_context_support >= _safe_float(depth_pressure_profile.get("breakout_ignition_flow_floor"), 0.22)
+                or micro_context_support >= depth_breakout_flow_floor
+                or (
+                    depth_breakout_pattern_driven_ready
+                    and elite_pattern_rank >= 0.28
+                    and depth_breakout_flow_support >= depth_breakout_flow_floor
+                )
             )
         )
         if crypto_directional_relief_ready:
@@ -3247,7 +3293,7 @@ class PlaybookService:
             and cluster_penalty <= 0.20
             and context_pressure_confirmation_ready
         )
-        if context_driven_direction and not context_pressure_execution_ready:
+        if context_driven_direction and not context_pressure_execution_ready and not depth_breakout_ignition_ready:
             return None
         if (
             fast_confirmation_required > 1
@@ -3256,6 +3302,7 @@ class PlaybookService:
             and not directional_liquidity_sweep_ready
             and not context_fast_track_ready
             and not depth_context_pressure_ready
+            and not depth_breakout_ignition_ready
         ):
             return None
         if direction == "BUY" and upside_exhaustion_score >= 0.58:
@@ -3376,7 +3423,7 @@ class PlaybookService:
             and depth_breakout_ignition_ready
         ):
             playbook = "breakout_continuation"
-            entry_style = "breakout_close"
+            entry_style = "breakout_ignition"
             readiness_note = f"breakout_ignition_{depth_pressure_profile.get('kind') or 'depth'}"
         elif (
             "breakout_continuation" in plan.allowed_playbooks
@@ -5245,6 +5292,7 @@ class PlaybookService:
             "intermarket_break",
             "intermarket_confirmed_break",
             "intermarket_trend_hold",
+            "breakout_ignition",
         }:
             seed_floor = min(seed_floor, max(float(profile.support_min_confidence), float(profile.seed_min_confidence) - 0.03))
 
