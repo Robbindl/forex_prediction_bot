@@ -9093,6 +9093,30 @@ def _collect_system_health_snapshot(core: Any, health: Dict[str, Any]) -> Dict[s
     }
 
 
+def _collect_configured_expiry_warnings() -> List[str]:
+    try:
+        from config.config import API_KEY_EXPIRY_DATES
+    except Exception:
+        return []
+
+    today = datetime.now().date()
+    warnings: List[str] = []
+    for name, exp_date in dict(API_KEY_EXPIRY_DATES or {}).items():
+        try:
+            days_left = (exp_date - today).days
+        except Exception:
+            continue
+        if not (-1 <= days_left <= 7):
+            continue
+        if days_left < 0:
+            warnings.append(f"{name} expired {abs(days_left)} day{'s' if abs(days_left) != 1 else ''} ago")
+        elif days_left == 0:
+            warnings.append(f"{name} expires today ({exp_date.isoformat()})")
+        else:
+            warnings.append(f"{name} expires in {days_left} day{'s' if days_left != 1 else ''} ({exp_date.isoformat()})")
+    return warnings
+
+
 def _source_health_with_market_quiet(
     source_health: Any,
     stale_sources: Any,
@@ -9193,6 +9217,9 @@ def api_system_health():
             telegram_ok=bool((snapshot.get("processes") or {}).get("Telegram")),
         )
 
+        expiry_warnings = _collect_configured_expiry_warnings()
+        issues = list(health.get("issues") or [])
+        issues.extend(expiry_warnings)
         payload = {
             "success":          True,
             **snapshot,
@@ -9206,7 +9233,8 @@ def api_system_health():
             "ig_broker":       dict(health.get("ig_broker") or _collect_ig_broker_snapshot()),
             "recent_error_count": int(health.get("recent_error_count", 0) or 0),
             "recent_errors":    list(health.get("recent_errors") or []),
-            "issues":           health.get("issues", []),
+            "issues":           issues,
+            "expiry_alerts":     expiry_warnings,
             "strategy_mode":    health.get("strategy_mode", "—"),
             "balance":          health.get("balance", _args.balance),
             "timestamp":        datetime.now().isoformat(),

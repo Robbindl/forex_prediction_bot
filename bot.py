@@ -539,7 +539,7 @@ def _api_expiry_worker(engine) -> None:
                 today = _dt.date.today()
                 for name, exp_date in expiry_alerts:
                     days_left = (exp_date - today).days
-                    if days_left in (7, 3, 1, 0, -1):
+                    if -1 <= days_left <= 7:
                         if days_left < 0:
                             msg = (
                                 f"🔴 *API KEY EXPIRED*\n\n"

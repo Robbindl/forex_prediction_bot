@@ -92,6 +92,7 @@ DUKASCOPY_LIVE_DEPTH_JNLP_URL = (
 DUKASCOPY_LIVE_DEPTH_USERNAME = os.getenv("DUKASCOPY_LIVE_DEPTH_USERNAME", "").strip()
 DUKASCOPY_LIVE_DEPTH_PASSWORD = os.getenv("DUKASCOPY_LIVE_DEPTH_PASSWORD", "").strip()
 DUKASCOPY_LIVE_DEPTH_PIN = os.getenv("DUKASCOPY_LIVE_DEPTH_PIN", "").strip()
+DUKASCOPY_LIVE_DEPTH_EXPIRES_ON = os.getenv("DUKASCOPY_LIVE_DEPTH_EXPIRES_ON", "").strip()
 DUKASCOPY_LIVE_DEPTH_ASSETS = os.getenv("DUKASCOPY_LIVE_DEPTH_ASSETS", "").strip()
 DUKASCOPY_LIVE_DEPTH_CMD = os.getenv("DUKASCOPY_LIVE_DEPTH_CMD", "").strip()
 DUKASCOPY_LIVE_DEPTH_JAVA_BIN = os.getenv("DUKASCOPY_LIVE_DEPTH_JAVA_BIN", "").strip()
@@ -756,9 +757,27 @@ BINANCE_ANNOUNCEMENTS_URL = (
 # Format: {name: date}
 # Example: {"MyAPIKey": date(2026, 12, 31)}
 
-from datetime import date as _date
+from datetime import date as _date, datetime as _datetime
+
+
+def _parse_expiry_date(value: str):
+    text = str(value or "").strip()
+    if not text:
+        return None
+    try:
+        if "T" in text:
+            return _datetime.fromisoformat(text.replace("Z", "+00:00")).date()
+        return _date.fromisoformat(text[:10])
+    except Exception:
+        return None
+
+
+_DUKASCOPY_LIVE_DEPTH_EXPIRY_DATE = _parse_expiry_date(DUKASCOPY_LIVE_DEPTH_EXPIRES_ON)
 
 API_KEY_EXPIRY_DATES: dict = {
     # Add your API key expiry dates here
     # "QOS API": _date(2026, 3, 29),  # Uncomment and update as needed
 }
+
+if _DUKASCOPY_LIVE_DEPTH_EXPIRY_DATE:
+    API_KEY_EXPIRY_DATES["Dukascopy Live Depth"] = _DUKASCOPY_LIVE_DEPTH_EXPIRY_DATE
