@@ -139,15 +139,19 @@ def _context_directional_confluence(
         -1.0,
         1.0,
     )
+    micro_support_values = [
+        micro_score * direction_sign,
+        trade_flow_support,
+        book_imbalance * direction_sign * 0.90,
+    ]
+    if "orderflow_score" in micro or "orderflow_book_imbalance" in micro:
+        micro_support_values.append(orderflow_support)
+    if "tick_imbalance" in micro:
+        micro_support_values.append(tick_imbalance * direction_sign * 0.75)
+    if "velocity_bps" in micro:
+        micro_support_values.append(velocity_support * 0.85)
     micro_support = _clip(
-        max(
-            micro_score * direction_sign,
-            trade_flow_support,
-            orderflow_support,
-            book_imbalance * direction_sign * 0.90,
-            tick_imbalance * direction_sign * 0.75,
-            velocity_support * 0.85,
-        ),
+        max(micro_support_values, key=lambda value: (abs(value), value)),
         -1.0,
         1.0,
     )
@@ -545,6 +549,33 @@ def _dominant_context_snapshot(context: Optional[Dict[str, Any]]) -> Dict[str, A
         "depth_update_mode": str(dominant.get("depth_update_mode") or "none"),
         "whale_dominant": str(dominant.get("whale_dominant") or ""),
         "whale_ratio": round(_safe_float(dominant.get("whale_ratio"), 0.0), 4),
+    }
+
+
+def _directional_context_snapshot(context: Optional[Dict[str, Any]], direction: str) -> Dict[str, Any]:
+    direction_label = str(direction or "").strip().upper()
+    if direction_label not in {"BUY", "SELL"}:
+        return _dominant_context_snapshot(context)
+
+    directional = _context_directional_confluence(context, direction_label)
+    return {
+        "direction": direction_label,
+        "context_confluence": round(_safe_float(directional.get("score"), 0.0), 4),
+        "cross_alignment": round(_safe_float(directional.get("cross_support"), 0.0), 4),
+        "cross_confidence": round(_safe_float(directional.get("cross_confidence"), 0.0), 4),
+        "micro_score": round(_safe_float(directional.get("micro_support"), 0.0), 4),
+        "whale_context_support": round(_safe_float(directional.get("whale_support"), 0.0), 4),
+        "support_components": int(directional.get("support_components", 0) or 0),
+        "conflict_components": int(directional.get("conflict_components", 0) or 0),
+        "depth_available": bool(directional.get("depth_available")),
+        "synthetic_depth": bool(directional.get("synthetic_depth")),
+        "dom_event_backed": bool(directional.get("dom_event_backed")),
+        "dom_ladder_ready": bool(directional.get("dom_ladder_ready")),
+        "dom_stream_snapshot_ready": bool(directional.get("dom_stream_snapshot_ready")),
+        "dom_source_fidelity": str(directional.get("dom_source_fidelity") or "none"),
+        "depth_update_mode": str(directional.get("depth_update_mode") or "none"),
+        "whale_dominant": str(directional.get("whale_dominant") or ""),
+        "whale_ratio": round(_safe_float(directional.get("whale_ratio"), 0.0), 4),
     }
 
 
@@ -5351,7 +5382,10 @@ class PlaybookService:
         analysis = self.analyze(asset, category, price_data, context=context)
         best = analysis.get("primary")
         if not best:
-            context_snapshot = _dominant_context_snapshot(context)
+            structure = dict((context or {}).get("market_structure") or {})
+            plan = self._asset_plan(asset, category)
+            seed_state = _build_seed_state(structure=structure, plan=plan, context=context)
+            context_snapshot = _directional_context_snapshot(context, seed_state.direction)
             return {
                 "action": "",
                 "asset": asset,
