@@ -2684,6 +2684,7 @@ class PlaybookService:
         fast_entry_confirmation_ready = bool(structure.get("fast_entry_confirmation_ready"))
         fast_entry_confirmation_bars_required = int(structure.get("fast_entry_confirmation_bars_required", 0) or 0)
         fast_entry_confirmation_count = int(structure.get("fast_entry_confirmation_count", 0) or 0)
+        trigger_trend_aligned = bool(structure.get("trigger_trend_aligned"))
         pattern_family = seed_state.pattern_family
         pattern_family_direction = seed_state.pattern_family_direction
         liquidity_sweep_buy = bool(structure.get("liquidity_sweep_buy"))
@@ -3159,6 +3160,27 @@ class PlaybookService:
                 )
             )
         )
+        depth_momentum_continuation_ready = bool(
+            bool(depth_pressure_profile.get("ready"))
+            and depth_breakout_direction_ready
+            and (
+                family_directional_match
+                or depth_breakout_pattern_driven_ready
+                or directional_pattern_family_ready
+            )
+            and support_components >= 1
+            and conflict_components == 0
+            and context_depth_ready
+            and confluence_score >= 0.30
+            and depth_breakout_flow_support >= max(0.34, depth_breakout_flow_floor)
+            and effective_alignment_score >= 0.58
+            and effective_setup_quality >= 0.62
+            and target_efficiency_score >= 0.50
+            and extension_score <= 1.35
+            and cluster_penalty <= 0.18
+            and trigger_trend_aligned
+            and self._trend_sign(str(structure.get("trend_5m", "") or "")) == _playbook_direction_sign(direction)
+        )
         if crypto_directional_relief_ready:
             target_efficiency_floor = min(
                 target_efficiency_floor,
@@ -3242,6 +3264,27 @@ class PlaybookService:
                     + max(0.0, confluence_score) * 0.18
                     + max(0.0, target_efficiency_score) * 0.10,
                 )
+        if depth_momentum_continuation_ready:
+            target_efficiency_floor = min(target_efficiency_floor, 0.50)
+            extension_ceiling = max(extension_ceiling, 1.35)
+            alignment_floor = min(alignment_floor, 0.58)
+            setup_floor = min(setup_floor, 0.62)
+            if effective_candle_quality_score <= 0.0:
+                effective_candle_quality_score = min(
+                    1.0,
+                    0.24
+                    + effective_setup_quality * 0.18
+                    + max(0.0, confluence_score) * 0.18
+                    + max(0.0, abs(micro_context_support)) * 0.18,
+                )
+            if effective_session_quality_score <= 0.0 and str(session or "").lower() != "off":
+                effective_session_quality_score = min(
+                    1.0,
+                    0.24
+                    + effective_alignment_score * 0.14
+                    + max(0.0, confluence_score) * 0.18
+                    + max(0.0, target_efficiency_score) * 0.10,
+                )
 
         if effective_alignment_score < alignment_floor:
             return None
@@ -3291,9 +3334,12 @@ class PlaybookService:
         cluster_penalty_limit = 0.26 + (0.03 + inactivity_relief_strength * 0.04 if inactivity_seed_relief else 0.0)
         if impulse_age_bars >= impulse_age_limit or cluster_penalty >= cluster_penalty_limit:
             if not (
-                depth_breakout_ignition_ready
-                and impulse_age_bars <= int(depth_pressure_profile.get("breakout_ignition_impulse_age_limit", 7) or 7)
-                and cluster_penalty < 0.20
+                (
+                    depth_breakout_ignition_ready
+                    and impulse_age_bars <= int(depth_pressure_profile.get("breakout_ignition_impulse_age_limit", 7) or 7)
+                    and cluster_penalty < 0.20
+                )
+                or depth_momentum_continuation_ready
             ):
                 return None
         context_fast_track_ready = bool(
@@ -3352,6 +3398,7 @@ class PlaybookService:
             and not context_fast_track_ready
             and not depth_context_pressure_ready
             and not depth_breakout_ignition_ready
+            and not depth_momentum_continuation_ready
         ):
             return None
         if direction == "BUY" and upside_exhaustion_score >= 0.58:
@@ -3476,6 +3523,13 @@ class PlaybookService:
             readiness_note = f"breakout_ignition_{depth_pressure_profile.get('kind') or 'depth'}"
         elif (
             "breakout_continuation" in plan.allowed_playbooks
+            and depth_momentum_continuation_ready
+        ):
+            playbook = "breakout_continuation"
+            entry_style = "breakout_ignition"
+            readiness_note = f"breakout_ignition_momentum_{depth_pressure_profile.get('kind') or 'depth'}"
+        elif (
+            "breakout_continuation" in plan.allowed_playbooks
             and context_driven_direction
             and context_pressure_execution_ready
         ):
@@ -3535,6 +3589,8 @@ class PlaybookService:
             structural_ready_bonus += 0.06 + (0.02 if context_has_event_backed_depth else 0.01 if generic_depth_override else 0.0)
         elif entry_style == "elite_context_pressure":
             structural_ready_bonus += 0.08 + (0.02 if depth_context_pressure_ready else 0.0)
+        elif readiness_note.startswith("breakout_ignition_momentum_"):
+            structural_ready_bonus += 0.16
         elif readiness_note.startswith("breakout_ignition_"):
             structural_ready_bonus += 0.10
         elif entry_style in {"elite_pattern_pullback", "elite_pattern_retest"}:
@@ -3621,6 +3677,8 @@ class PlaybookService:
             score_floor = 0.34 if context_has_event_backed_depth else 0.35 if generic_depth_override else 0.36
         elif entry_style == "elite_context_pressure":
             score_floor = 0.40 if depth_context_pressure_ready else 0.40 if confluence_score >= 0.32 else 0.44
+        elif readiness_note.startswith("breakout_ignition_momentum_"):
+            score_floor = 0.34
         elif readiness_note.startswith("breakout_ignition_"):
             score_floor = 0.38
         elif entry_style in {"elite_pattern_pullback", "elite_pattern_retest"}:
@@ -3633,6 +3691,7 @@ class PlaybookService:
             + score * 0.40
             + max(0.0, confluence_score) * 0.08
             + (0.05 if entry_confirmation_ready else 0.0)
+            + (0.03 if readiness_note.startswith("breakout_ignition_momentum_") else 0.0)
             + (0.03 if playbook in {"breakout_retest", "trend_pullback", "failed_break_reclaim"} else 0.0),
             0.0,
             0.93,
@@ -3674,6 +3733,7 @@ class PlaybookService:
                 ),
                 "depth_context_pressure=1" if depth_context_pressure_ready else "depth_context_pressure=0",
                 "breakout_ignition=1" if depth_breakout_ignition_ready else "breakout_ignition=0",
+                "depth_momentum_continuation=1" if depth_momentum_continuation_ready else "depth_momentum_continuation=0",
                 f"depth_profile={depth_pressure_profile.get('kind') or 'none'}",
                 f"inactivity_relief={inactivity_relief_strength:.2f}" if inactivity_seed_relief else "inactivity_relief=0.00",
             ],
