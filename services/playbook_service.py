@@ -948,11 +948,43 @@ def _qualify_impulse_candidate(
     shock_timing_score: float = 0.0,
     shock_fresh_event: bool = False,
     shock_supported: bool = False,
+    depth_context_ready: bool = False,
+    context_confluence_score: float = 0.0,
+    context_support_components: int = 0,
+    context_conflict_components: int = 0,
+    context_micro_support: float = 0.0,
+    context_cross_support: float = 0.0,
+    context_whale_support: float = 0.0,
 ) -> tuple[bool, str, bool, bool]:
     candidate_score = _safe_float(candidate.get("score", 0.0), 0.0)
     entry_style_label = str(entry_style or "").strip().lower()
-    cross_strength = abs(_safe_float(candidate.get("cross_alignment", 0.0), 0.0))
-    micro_strength = abs(_safe_float(candidate.get("micro_score", 0.0), 0.0))
+    context_score = _safe_float(context_confluence_score, 0.0)
+    support_count = max(
+        int(candidate.get("support_components", 0) or 0),
+        int(context_support_components or 0),
+    )
+    conflict_count = max(
+        int(candidate.get("conflict_components", 0) or 0),
+        int(context_conflict_components or 0),
+    )
+    cross_strength = max(
+        abs(_safe_float(candidate.get("cross_alignment", 0.0), 0.0)),
+        abs(_safe_float(context_cross_support, 0.0)),
+    )
+    micro_strength = max(
+        abs(_safe_float(candidate.get("micro_score", 0.0), 0.0)),
+        abs(_safe_float(context_micro_support, 0.0)),
+    )
+    whale_strength = abs(_safe_float(context_whale_support, 0.0))
+    depth_context_confirmation = bool(
+        depth_context_ready
+        and support_count >= 1
+        and conflict_count == 0
+        and context_score >= 0.30
+        and max(micro_strength, cross_strength, whale_strength) >= 0.34
+        and target_efficiency_score >= 0.50
+        and extension_score <= 1.35
+    )
     impulse_break_style = bool(
         entry_style_label in {
             "expansion_break",
@@ -1010,6 +1042,7 @@ def _qualify_impulse_candidate(
         or structure_promoted
         or trigger_trend_aligned
         or max(cross_strength, micro_strength) >= 0.22
+        or depth_context_confirmation
     )
     inactivity_seed_relief = bool(inactivity_flat_book and inactivity_relief_strength > 0.0)
     inactivity_candidate_floor = max(
@@ -1095,8 +1128,8 @@ def _qualify_impulse_candidate(
         entry_style_label == "elite_context_pressure"
         and candidate_score >= max(0.44, float(profile.breakout_min_score) - 0.16)
         and max(cross_strength, micro_strength) >= 0.28
-        and int(candidate.get("support_components", 0) or 0) >= 1
-        and int(candidate.get("conflict_components", 0) or 0) == 0
+        and support_count >= 1
+        and conflict_count == 0
     )
     if context_pressure_ready:
         strong_impulse_break = True
@@ -1104,8 +1137,8 @@ def _qualify_impulse_candidate(
     breakout_ignition_context = bool(
         entry_style_label == "breakout_ignition"
         and candidate_score >= early_relief_candidate_floor
-        and int(candidate.get("support_components", 0) or 0) >= 1
-        and int(candidate.get("conflict_components", 0) or 0) == 0
+        and support_count >= 1
+        and conflict_count == 0
         and max(cross_strength, micro_strength) >= 0.22
         and target_efficiency_score >= 0.08
         and extension_score <= 1.62
@@ -1122,6 +1155,7 @@ def _qualify_impulse_candidate(
             entry_confirmation_ready
             or near_confirmation
             or fast_shock_context
+            or depth_context_confirmation
             or (
                 external_confirmation_score >= 0.20
                 and max(cross_strength, micro_strength) >= 0.18
@@ -1137,6 +1171,7 @@ def _qualify_impulse_candidate(
             or external_confirmation_score >= 0.22
             or max(cross_strength, micro_strength) >= 0.28
             or shock_supported
+            or depth_context_confirmation
         )
         if entry_confirmation_bars_required > 0 and not expansion_confirmed:
             return False, f"confirmation_pending:{playbook}", strong_impulse_break, allow_early_trend_relief
@@ -2350,6 +2385,13 @@ class PlaybookService:
             or (direction == "SELL" and liquidity_sweep_sell)
         )
         context_confluence = _context_directional_confluence(context, direction)
+        context_score = _safe_float(context_confluence.get("score"), 0.0)
+        context_cross_support = _safe_float(context_confluence.get("cross_support"), 0.0)
+        context_micro_support = _safe_float(context_confluence.get("micro_support"), 0.0)
+        context_whale_support = _safe_float(context_confluence.get("whale_support"), 0.0)
+        context_support_count = int(context_confluence.get("support_components", 0) or 0)
+        context_conflict_count = int(context_confluence.get("conflict_components", 0) or 0)
+        depth_context_ready = bool(_depth_context_pressure_profile(category, context_confluence).get("ready"))
         shock_profile = _shared_shock_profile(
             candidate=candidate,
             structure=structure,
@@ -2402,12 +2444,12 @@ class PlaybookService:
             "liquidity_sweep_directional": bool(liquidity_sweep_directional),
             "inactivity_relief_strength": round(inactivity_relief_strength, 4),
             "inactivity_flat_book": inactivity_flat_book,
-            "context_confluence": round(_safe_float(context_confluence.get("score"), 0.0), 4),
-            "cross_context_support": round(_safe_float(context_confluence.get("cross_support"), 0.0), 4),
-            "micro_context_support": round(_safe_float(context_confluence.get("micro_support"), 0.0), 4),
-            "whale_context_support": round(_safe_float(context_confluence.get("whale_support"), 0.0), 4),
-            "support_components": int(context_confluence.get("support_components", 0) or 0),
-            "conflict_components": int(context_confluence.get("conflict_components", 0) or 0),
+            "context_confluence": round(context_score, 4),
+            "cross_context_support": round(context_cross_support, 4),
+            "micro_context_support": round(context_micro_support, 4),
+            "whale_context_support": round(context_whale_support, 4),
+            "support_components": context_support_count,
+            "conflict_components": context_conflict_count,
             "shock_score": round(float(shock_profile.get("score", 0.0) or 0.0), 4),
             "shock_event_score": round(float(shock_profile.get("event_score", 0.0) or 0.0), 4),
             "headline_shock_score": round(float(shock_profile.get("headline_shock_score", 0.0) or 0.0), 4),
@@ -2483,6 +2525,13 @@ class PlaybookService:
                 shock_timing_score=float(shock_profile.get("timing_score", 0.0) or 0.0),
                 shock_fresh_event=bool(shock_profile.get("fresh_event")),
                 shock_supported=bool(shock_profile.get("supported")),
+                depth_context_ready=depth_context_ready,
+                context_confluence_score=context_score,
+                context_support_components=context_support_count,
+                context_conflict_components=context_conflict_count,
+                context_micro_support=context_micro_support,
+                context_cross_support=context_cross_support,
+                context_whale_support=context_whale_support,
             )
             qualification["strong_impulse_break"] = bool(strong_impulse_break)
             qualification["allow_early_trend_relief"] = bool(allow_early_trend_relief)
