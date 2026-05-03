@@ -41,6 +41,35 @@ _EXCHANGE_TRUE_DEPTH_PROVIDERS = {"binance", "bybit", "okx"}
 _SIDECAR_TRUE_DEPTH_PROVIDERS = {"dukascopy", "ctrader"}
 
 
+def _true_depth_provider_kind(
+    microstructure_source: str,
+    depth_provider: str,
+    depth_provider_class: str,
+) -> str:
+    source = str(microstructure_source or "").strip().lower()
+    provider = str(depth_provider or "").strip().lower()
+    provider_class = str(depth_provider_class or "").strip().lower()
+    if (
+        provider_class == "exchange_depth"
+        or any(token in provider for token in _EXCHANGE_TRUE_DEPTH_PROVIDERS)
+        or source in {"binance_rest_depth", "binance_live_depth"}
+        or (
+            source == "live_store_depth"
+            and any(token in provider for token in _EXCHANGE_TRUE_DEPTH_PROVIDERS)
+        )
+    ):
+        return "exchange"
+    if provider_class == "redis_subscriber" or source == "order_flow_true_depth":
+        return "redis"
+    if (
+        provider_class == "sidecar"
+        or source in {"dukascopy_live_depth", "ctrader_live_depth"}
+        or any(token in provider for token in _SIDECAR_TRUE_DEPTH_PROVIDERS)
+    ):
+        return "sidecar"
+    return ""
+
+
 def _is_preferred_true_depth_source(
     microstructure_source: str,
     depth_provider: str,
@@ -3289,6 +3318,14 @@ class SignalDecisionEngine:
             signal.metadata.get("depth_provider_class") or signal.metadata.get("source_class") or ""
         ).strip().lower()
         depth_environment = str(signal.metadata.get("depth_environment", "") or "").strip().lower()
+        true_depth_provider_kind = _true_depth_provider_kind(
+            microstructure_source,
+            depth_provider,
+            depth_provider_class,
+        )
+        exchange_true_depth_source = true_depth_provider_kind == "exchange"
+        sidecar_true_depth_source = true_depth_provider_kind == "sidecar"
+        redis_true_depth_source = true_depth_provider_kind == "redis"
         depth_provider_trust_score = float(signal.metadata.get("depth_provider_trust_score", 0.0) or 0.0)
         if depth_provider_trust_score <= 0.0 and microstructure_source == "order_flow_true_depth":
             depth_provider_trust_score = 0.90
@@ -3364,7 +3401,29 @@ class SignalDecisionEngine:
             or signal.strategy_id
             or ""
         ).strip().lower()
-        entry_style = str(signal.metadata.get("playbook_entry_style") or "").strip().lower()
+        entry_style = str(
+            signal.metadata.get("playbook_entry_style")
+            or signal.metadata.get("entry_style")
+            or ""
+        ).strip().lower()
+        seed_score = float(
+            signal.metadata.get("seed_candidate_score", signal.confidence)
+            or signal.confidence
+            or 0.0
+        )
+        playbook_context_confluence = float(
+            signal.metadata.get("playbook_context_confluence", 0.0) or 0.0
+        )
+        playbook_cross_alignment = float(
+            signal.metadata.get("playbook_cross_alignment", 0.0) or 0.0
+        )
+        playbook_micro_score = float(signal.metadata.get("playbook_micro_score", 0.0) or 0.0)
+        playbook_support_components = int(
+            signal.metadata.get("playbook_support_components", 0) or 0
+        )
+        playbook_conflict_components = int(
+            signal.metadata.get("playbook_conflict_components", 0) or 0
+        )
         impulse_break_style = bool(
             entry_style in {
                 "expansion_break",
@@ -3796,6 +3855,30 @@ class SignalDecisionEngine:
         minimum_usable_true_depth_trust_score = float(
             execution_policy.get("minimum_usable_true_depth_trust_score", 0.60) or 0.60
         )
+        if sidecar_true_depth_source:
+            ctrader_sidecar_depth = bool(
+                "ctrader" in depth_provider or "ctrader" in microstructure_source
+            )
+            sidecar_trust_floor = (
+                0.58
+                if ctrader_sidecar_depth
+                and depth_environment not in {"", "live", "real", "production"}
+                else 0.60
+            )
+            preferred_true_depth_min_quality = min(preferred_true_depth_min_quality, 0.25)
+            preferred_true_depth_min_trust_score = min(
+                preferred_true_depth_min_trust_score,
+                sidecar_trust_floor,
+            )
+            minimum_usable_true_depth_trust_score = min(
+                minimum_usable_true_depth_trust_score,
+                sidecar_trust_floor,
+            )
+        elif exchange_true_depth_source and category_label == "crypto":
+            preferred_true_depth_min_trust_score = min(
+                preferred_true_depth_min_trust_score,
+                0.72,
+            )
         depth_sovereignty_min_directional_flow = float(
             execution_policy.get("depth_sovereignty_min_directional_flow", 0.22) or 0.22
         )
@@ -5163,6 +5246,151 @@ class SignalDecisionEngine:
                 reasons.append("guarded force used true-depth DOM to override soft execution gates")
                 guarded_force_applied = True
 
+        context_pressure_soft_override_removed_blocks: List[str] = []
+        context_pressure_soft_override_blocked_by: List[str] = []
+        context_pressure_soft_override_condition_blocks: List[str] = []
+        context_pressure_soft_override_applied = False
+        context_pressure_depth_kind = true_depth_provider_kind or "none"
+        context_pressure_category_supported = category_label in {
+            "crypto",
+            "forex",
+            "commodities",
+            "commodity",
+            "indices",
+            "index",
+        }
+        if sidecar_true_depth_source:
+            context_pressure_alignment_floor = 0.36 if category_label in {"commodities", "commodity"} else 0.40
+            context_pressure_setup_floor = 0.48 if category_label in {"commodities", "commodity"} else 0.50
+            context_pressure_context_floor = 0.15
+            context_pressure_micro_floor = 0.58
+            context_pressure_seed_floor = 0.66
+            context_pressure_max_flow_conflict = -0.30
+            context_pressure_target_floor = 0.08
+            context_pressure_extension_ceiling = 1.08
+        else:
+            context_pressure_alignment_floor = 0.46 if category_label in {"crypto", "commodities", "commodity"} else 0.50
+            context_pressure_setup_floor = (
+                0.46
+                if category_label == "crypto"
+                else 0.48
+                if category_label in {"commodities", "commodity"}
+                else 0.50
+            )
+            context_pressure_context_floor = 0.14
+            context_pressure_micro_floor = 0.64 if category_label == "crypto" else 0.60
+            context_pressure_seed_floor = 0.68
+            context_pressure_max_flow_conflict = -0.35 if category_label == "crypto" else -0.30
+            context_pressure_target_floor = 0.08
+            context_pressure_extension_ceiling = 1.20 if category_label == "crypto" else 1.12
+        context_pressure_depth_ok = bool(
+            context_pressure_category_supported
+            and true_depth_available
+            and preferred_true_depth
+            and not synthetic_depth_only
+            and (
+                trusted_real_dom_book_available
+                or trusted_snapshot_true_depth_available
+                or trusted_real_dom_fallback_available
+            )
+            and true_depth_quote_aligned
+            and depth_quote_alignment_score >= 0.80
+            and not external_depth_rejected
+            and not depth_fragmentation_untrusted
+            and context_pressure_depth_kind in {"exchange", "sidecar", "redis"}
+        )
+        context_pressure_playbook_ok = bool(
+            entry_style == "elite_context_pressure"
+            and seed_score >= context_pressure_seed_floor
+            and playbook_support_components >= 1
+            and playbook_conflict_components == 0
+            and playbook_micro_score >= context_pressure_micro_floor
+            and (
+                playbook_context_confluence >= context_pressure_context_floor
+                or (
+                    abs(playbook_cross_alignment) >= context_pressure_context_floor
+                    and playbook_micro_score >= context_pressure_micro_floor + 0.08
+                )
+            )
+        )
+        context_pressure_structure_ok = bool(
+            alignment_score >= context_pressure_alignment_floor
+            and setup_quality >= context_pressure_setup_floor
+            and candle_quality_score >= 0.24
+            and session_quality_score >= 0.30
+            and target_efficiency_score >= context_pressure_target_floor
+            and opposing_distance > opposing_distance_hard_floor
+            and extension_score <= context_pressure_extension_ceiling
+            and directional_extension <= min(guarded_force_max_directional_extension + 0.08, 0.92)
+            and impulse_age_bars <= impulse_age_hard_limit + 1
+            and directional_extension < directional_extension_hard_limit + 0.10
+            and stop_hunt_risk < min(guarded_force_max_stop_hunt_risk + 0.08, 0.56)
+            and not failed_opposite_move_confirmed
+        )
+        context_pressure_market_ok = bool(
+            guarded_force_market_ok
+            and not crypto_flow_breadth_hard_block
+            and not event_ladder_cross_market_hard_block
+            and not (
+                dom_stream_hard_floor_breached
+                and not trusted_real_dom_fallback_available
+            )
+            and directional_flow_conflict > context_pressure_max_flow_conflict
+            and true_depth_directional_conflict > max(context_pressure_max_flow_conflict, -0.28)
+        )
+        context_pressure_soft_override_candidate = bool(
+            guarded_force_entry_enabled
+            and context_pressure_depth_ok
+            and context_pressure_playbook_ok
+            and context_pressure_structure_ok
+            and context_pressure_market_ok
+        )
+        context_pressure_soft_override_safety_blocks = [
+            block for block in hard_blocks if block not in guarded_force_soft_blocks
+        ]
+        if guarded_force_entry_enabled:
+            if not context_pressure_depth_ok:
+                context_pressure_soft_override_condition_blocks.append(
+                    "context-pressure depth is insufficient"
+                )
+            if not context_pressure_playbook_ok:
+                context_pressure_soft_override_condition_blocks.append(
+                    "context-pressure playbook proof is insufficient"
+                )
+            if not context_pressure_structure_ok:
+                context_pressure_soft_override_condition_blocks.append(
+                    "context-pressure structure is not forceable"
+                )
+            if not context_pressure_market_ok:
+                context_pressure_soft_override_condition_blocks.append(
+                    "context-pressure market context is not forceable"
+                )
+            context_pressure_soft_override_blocked_by = list(
+                dict.fromkeys(
+                    context_pressure_soft_override_safety_blocks
+                    + context_pressure_soft_override_condition_blocks
+                )
+            )
+        if (
+            not guarded_force_applied
+            and context_pressure_soft_override_candidate
+            and hard_blocks
+            and not context_pressure_soft_override_safety_blocks
+        ):
+            context_pressure_soft_override_removed_blocks = [
+                block for block in hard_blocks if block in guarded_force_soft_blocks
+            ]
+            if context_pressure_soft_override_removed_blocks:
+                hard_blocks = [
+                    block for block in hard_blocks if block not in guarded_force_soft_blocks
+                ]
+                risk_score = max(0.0, risk_score - min(guarded_force_risk_relief, 0.14))
+                notes.append("context_pressure_entry")
+                reasons.append(
+                    "elite context-pressure proof used trusted DOM to override soft execution gates"
+                )
+                context_pressure_soft_override_applied = True
+
         risk_kill_threshold = base_risk_kill_threshold + adaptive_policy_relief * 0.70 - adaptive_policy_penalty * 0.50
         if high_conviction_continuation_supported:
             risk_kill_threshold += 0.04
@@ -5186,6 +5414,10 @@ class SignalDecisionEngine:
             "microstructure_source": microstructure_source,
             "depth_provider": depth_provider,
             "depth_provider_class": depth_provider_class,
+            "true_depth_provider_kind": true_depth_provider_kind,
+            "exchange_true_depth_source": exchange_true_depth_source,
+            "sidecar_true_depth_source": sidecar_true_depth_source,
+            "redis_true_depth_source": redis_true_depth_source,
             "depth_environment": depth_environment,
             "depth_quality": round(depth_quality, 4),
             "depth_quality_tier": depth_quality_tier,
@@ -5256,6 +5488,27 @@ class SignalDecisionEngine:
             "guarded_force_applied": guarded_force_applied,
             "guarded_force_removed_blocks": list(guarded_force_removed_blocks),
             "guarded_force_blocked_by": list(guarded_force_blocked_by),
+            "context_pressure_depth_kind": context_pressure_depth_kind,
+            "context_pressure_seed_floor": round(context_pressure_seed_floor, 4),
+            "context_pressure_alignment_floor": round(context_pressure_alignment_floor, 4),
+            "context_pressure_setup_floor": round(context_pressure_setup_floor, 4),
+            "context_pressure_context_floor": round(context_pressure_context_floor, 4),
+            "context_pressure_micro_floor": round(context_pressure_micro_floor, 4),
+            "context_pressure_max_flow_conflict": round(context_pressure_max_flow_conflict, 4),
+            "context_pressure_target_floor": round(context_pressure_target_floor, 4),
+            "context_pressure_extension_ceiling": round(context_pressure_extension_ceiling, 4),
+            "context_pressure_depth_ok": context_pressure_depth_ok,
+            "context_pressure_playbook_ok": context_pressure_playbook_ok,
+            "context_pressure_structure_ok": context_pressure_structure_ok,
+            "context_pressure_market_ok": context_pressure_market_ok,
+            "context_pressure_soft_override_candidate": context_pressure_soft_override_candidate,
+            "context_pressure_soft_override_applied": context_pressure_soft_override_applied,
+            "context_pressure_soft_override_removed_blocks": list(
+                context_pressure_soft_override_removed_blocks
+            ),
+            "context_pressure_soft_override_blocked_by": list(
+                context_pressure_soft_override_blocked_by
+            ),
             "preferred_true_depth": preferred_true_depth,
             "minimum_usable_true_depth_quality": round(minimum_usable_true_depth_quality, 4),
             "meets_true_depth_quality_floor": meets_true_depth_quality_floor,
@@ -5340,6 +5593,12 @@ class SignalDecisionEngine:
             "breakout_ignition_confirmation_override": breakout_ignition_confirmation_override,
             "context_continuation_execution_candidate": context_continuation_execution_candidate,
             "context_confirmation_override": context_confirmation_override,
+            "seed_score": round(seed_score, 4),
+            "playbook_context_confluence": round(playbook_context_confluence, 4),
+            "playbook_cross_alignment": round(playbook_cross_alignment, 4),
+            "playbook_micro_score": round(playbook_micro_score, 4),
+            "playbook_support_components": int(playbook_support_components),
+            "playbook_conflict_components": int(playbook_conflict_components),
             "depth_sovereignty_supported": depth_sovereignty_supported,
             "depth_sovereignty_source": depth_sovereignty_source,
             "depth_sovereignty_reason": depth_sovereignty_reason,
@@ -5368,6 +5627,29 @@ class SignalDecisionEngine:
         signal.metadata["guarded_force_applied"] = guarded_force_applied
         signal.metadata["guarded_force_removed_blocks"] = list(guarded_force_removed_blocks)
         signal.metadata["guarded_force_blocked_by"] = list(guarded_force_blocked_by)
+        signal.metadata["true_depth_provider_kind"] = true_depth_provider_kind
+        signal.metadata["exchange_true_depth_source"] = exchange_true_depth_source
+        signal.metadata["sidecar_true_depth_source"] = sidecar_true_depth_source
+        signal.metadata["redis_true_depth_source"] = redis_true_depth_source
+        signal.metadata["seed_score"] = round(seed_score, 4)
+        signal.metadata["playbook_context_confluence"] = round(playbook_context_confluence, 4)
+        signal.metadata["playbook_cross_alignment"] = round(playbook_cross_alignment, 4)
+        signal.metadata["playbook_micro_score"] = round(playbook_micro_score, 4)
+        signal.metadata["playbook_support_components"] = int(playbook_support_components)
+        signal.metadata["playbook_conflict_components"] = int(playbook_conflict_components)
+        signal.metadata["context_pressure_depth_kind"] = context_pressure_depth_kind
+        signal.metadata["context_pressure_soft_override_candidate"] = (
+            context_pressure_soft_override_candidate
+        )
+        signal.metadata["context_pressure_soft_override_applied"] = (
+            context_pressure_soft_override_applied
+        )
+        signal.metadata["context_pressure_soft_override_removed_blocks"] = list(
+            context_pressure_soft_override_removed_blocks
+        )
+        signal.metadata["context_pressure_soft_override_blocked_by"] = list(
+            context_pressure_soft_override_blocked_by
+        )
         signal.metadata["depth_provider_trust_score_effective"] = round(
             depth_provider_trust_score_effective,
             4,
@@ -5417,6 +5699,12 @@ class SignalDecisionEngine:
             "breakout_ignition_confirmation_override": breakout_ignition_confirmation_override,
             "context_continuation_execution_candidate": context_continuation_execution_candidate,
             "context_confirmation_override": context_confirmation_override,
+            "seed_score": round(seed_score, 4),
+            "playbook_context_confluence": round(playbook_context_confluence, 4),
+            "playbook_cross_alignment": round(playbook_cross_alignment, 4),
+            "playbook_micro_score": round(playbook_micro_score, 4),
+            "playbook_support_components": int(playbook_support_components),
+            "playbook_conflict_components": int(playbook_conflict_components),
             "has_directional_flow_support": has_directional_flow_support,
             "has_directional_flow_conflict": has_directional_flow_conflict,
             "depth_sovereignty_supported": depth_sovereignty_supported,
@@ -5437,6 +5725,23 @@ class SignalDecisionEngine:
             "guarded_force_applied": guarded_force_applied,
             "guarded_force_removed_blocks": list(guarded_force_removed_blocks),
             "guarded_force_blocked_by": list(guarded_force_blocked_by),
+            "true_depth_provider_kind": true_depth_provider_kind,
+            "exchange_true_depth_source": exchange_true_depth_source,
+            "sidecar_true_depth_source": sidecar_true_depth_source,
+            "redis_true_depth_source": redis_true_depth_source,
+            "context_pressure_depth_kind": context_pressure_depth_kind,
+            "context_pressure_depth_ok": context_pressure_depth_ok,
+            "context_pressure_playbook_ok": context_pressure_playbook_ok,
+            "context_pressure_structure_ok": context_pressure_structure_ok,
+            "context_pressure_market_ok": context_pressure_market_ok,
+            "context_pressure_soft_override_candidate": context_pressure_soft_override_candidate,
+            "context_pressure_soft_override_applied": context_pressure_soft_override_applied,
+            "context_pressure_soft_override_removed_blocks": list(
+                context_pressure_soft_override_removed_blocks
+            ),
+            "context_pressure_soft_override_blocked_by": list(
+                context_pressure_soft_override_blocked_by
+            ),
             "dom_stream_health_known": dom_stream_health_known,
             "dom_stream_health_score": round(dom_stream_health_score, 4),
             "dom_stream_trust_decay": round(dom_stream_trust_decay, 4),
@@ -5486,6 +5791,12 @@ class SignalDecisionEngine:
             "score": round(risk_score, 4),
             "playbook_name": playbook_name,
             "entry_style": entry_style,
+            "seed_score": round(seed_score, 4),
+            "playbook_context_confluence": round(playbook_context_confluence, 4),
+            "playbook_cross_alignment": round(playbook_cross_alignment, 4),
+            "playbook_micro_score": round(playbook_micro_score, 4),
+            "playbook_support_components": int(playbook_support_components),
+            "playbook_conflict_components": int(playbook_conflict_components),
             "directional_extension": round(directional_extension, 4),
             "opposing_distance": round(opposing_distance, 6),
             "supportive_structure_distance": round(supportive_structure_distance, 6),
@@ -5520,6 +5831,10 @@ class SignalDecisionEngine:
             "trade_cluster_penalty": round(cluster_penalty, 4),
             "depth_provider_trust_score": round(depth_provider_trust_score, 4),
             "depth_provider_trust_score_effective": round(depth_provider_trust_score_effective, 4),
+            "true_depth_provider_kind": true_depth_provider_kind,
+            "exchange_true_depth_source": exchange_true_depth_source,
+            "sidecar_true_depth_source": sidecar_true_depth_source,
+            "redis_true_depth_source": redis_true_depth_source,
             "depth_provider_trust_decay_applied": round(
                 max(0.0, depth_provider_trust_score - depth_provider_trust_score_effective),
                 4,
@@ -5598,6 +5913,19 @@ class SignalDecisionEngine:
             "guarded_force_applied": guarded_force_applied,
             "guarded_force_removed_blocks": list(guarded_force_removed_blocks),
             "guarded_force_blocked_by": list(guarded_force_blocked_by),
+            "context_pressure_depth_kind": context_pressure_depth_kind,
+            "context_pressure_depth_ok": context_pressure_depth_ok,
+            "context_pressure_playbook_ok": context_pressure_playbook_ok,
+            "context_pressure_structure_ok": context_pressure_structure_ok,
+            "context_pressure_market_ok": context_pressure_market_ok,
+            "context_pressure_soft_override_candidate": context_pressure_soft_override_candidate,
+            "context_pressure_soft_override_applied": context_pressure_soft_override_applied,
+            "context_pressure_soft_override_removed_blocks": list(
+                context_pressure_soft_override_removed_blocks
+            ),
+            "context_pressure_soft_override_blocked_by": list(
+                context_pressure_soft_override_blocked_by
+            ),
             "snapshot_dom_requires_confirmation": snapshot_dom_requires_confirmation,
             "dom_stream_snapshot_ready": dom_stream_snapshot_ready,
             "snapshot_stream_supportive": snapshot_stream_supportive,
