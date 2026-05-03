@@ -5423,8 +5423,7 @@ class SignalDecisionEngine:
             )
         )
         breakout_momentum_playbook_ok = bool(
-            category_label == "crypto"
-            and entry_style in {"breakout_close", "breakout_ignition"}
+            entry_style in {"breakout_close", "breakout_ignition"}
             and seed_score >= 0.84
             and float(signal.confidence or 0.0) >= 0.66
             and playbook_support_components >= 1
