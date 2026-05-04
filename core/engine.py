@@ -14,6 +14,22 @@ from typing import Any, Callable, Dict, List, Optional, Tuple, Type, cast
 import pandas as pd
 
 from config.config import (
+    BROKER_MAX_EXECUTION_CONFLICTS,
+    BROKER_MAX_NEW_TRADES_PER_CYCLE,
+    BROKER_MAX_OPEN_POSITIONS,
+    BROKER_MAX_OPEN_POSITIONS_PER_CATEGORY,
+    BROKER_MAX_SAME_DIRECTION_POSITIONS,
+    BROKER_MIN_EXECUTION_ALIGNMENT,
+    BROKER_MIN_EXECUTION_CONFIDENCE,
+    BROKER_MIN_EXECUTION_OPPORTUNITY_SCORE,
+    BROKER_MIN_EXECUTION_SETUP_QUALITY,
+    BROKER_MIN_SECONDS_BETWEEN_ENTRIES,
+    BROKER_PORTFOLIO_COOLDOWN_MINUTES,
+    BROKER_PORTFOLIO_EMERGENCY_FLATTEN_ENABLED,
+    BROKER_PORTFOLIO_MAX_FLOATING_LOSS_PCT,
+    BROKER_PORTFOLIO_MIN_LOSING_POSITIONS,
+    BROKER_STARTUP_TRADE_FREEZE_SECONDS,
+    BROKER_SUPPORT_CHECK_POOL_LIMIT,
     INACTIVITY_RELIEF_FULL_HOURS,
     INACTIVITY_RELIEF_START_HOURS,
     EXECUTION_MODE,
@@ -2475,12 +2491,7 @@ class TradingCore:
 
     @staticmethod
     def _broker_portfolio_guard_enabled() -> bool:
-        return str(os.getenv("BROKER_PORTFOLIO_EMERGENCY_FLATTEN_ENABLED", "true")).strip().lower() in {
-            "1",
-            "true",
-            "yes",
-            "on",
-        }
+        return bool(BROKER_PORTFOLIO_EMERGENCY_FLATTEN_ENABLED)
 
     def _broker_position_floating_pnl(
         self,
@@ -2527,7 +2538,13 @@ class TradingCore:
         total_pnl = round(sum(self._float_or_zero(pos.get("pnl")) for pos in broker_positions), 2)
         losing = [pos for pos in broker_positions if self._float_or_zero(pos.get("pnl")) < 0.0]
         balance = max(0.0, self._float_or_zero(getattr(self.state, "balance", 0.0) or self.balance))
-        threshold_pct = max(0.1, self._env_float("BROKER_PORTFOLIO_MAX_FLOATING_LOSS_PCT", 1.5))
+        threshold_pct = max(
+            0.1,
+            self._env_float(
+                "BROKER_PORTFOLIO_MAX_FLOATING_LOSS_PCT",
+                float(BROKER_PORTFOLIO_MAX_FLOATING_LOSS_PCT),
+            ),
+        )
         loss_limit = round(balance * (threshold_pct / 100.0), 2)
         return {
             "positions": broker_positions,
@@ -2539,7 +2556,13 @@ class TradingCore:
             "loss_limit": loss_limit,
             "triggered": bool(
                 broker_positions
-                and len(losing) >= max(1, self._env_int("BROKER_PORTFOLIO_MIN_LOSING_POSITIONS", 3))
+                and len(losing) >= max(
+                    1,
+                    self._env_int(
+                        "BROKER_PORTFOLIO_MIN_LOSING_POSITIONS",
+                        int(BROKER_PORTFOLIO_MIN_LOSING_POSITIONS),
+                    ),
+                )
                 and total_pnl <= -abs(loss_limit)
             ),
         }
@@ -2565,7 +2588,10 @@ class TradingCore:
         if not positions:
             return False
         self._broker_portfolio_flatten_active = True
-        cooldown_minutes = max(1.0, self._env_float("BROKER_PORTFOLIO_COOLDOWN_MINUTES", 60.0))
+        cooldown_minutes = max(
+            1.0,
+            self._env_float("BROKER_PORTFOLIO_COOLDOWN_MINUTES", float(BROKER_PORTFOLIO_COOLDOWN_MINUTES)),
+        )
         reason = (
             f"IG Portfolio Emergency Flatten: floating P/L "
             f"{float(snapshot.get('total_pnl', 0.0) or 0.0):.2f} breached "
@@ -2914,7 +2940,10 @@ class TradingCore:
     def _broker_startup_execution_block_reason(self) -> str:
         if not self._broker_balance_enabled():
             return ""
-        freeze_seconds = max(0.0, self._env_float("BROKER_STARTUP_TRADE_FREEZE_SECONDS", 300.0))
+        freeze_seconds = max(
+            0.0,
+            self._env_float("BROKER_STARTUP_TRADE_FREEZE_SECONDS", float(BROKER_STARTUP_TRADE_FREEZE_SECONDS)),
+        )
         if freeze_seconds <= 0:
             return ""
         age = time.monotonic() - float(self._started_monotonic or 0.0)
@@ -2926,7 +2955,10 @@ class TradingCore:
     def _broker_entry_spacing_block_reason(self) -> str:
         if not self._broker_balance_enabled():
             return ""
-        spacing = max(0.0, self._env_float("BROKER_MIN_SECONDS_BETWEEN_ENTRIES", 300.0))
+        spacing = max(
+            0.0,
+            self._env_float("BROKER_MIN_SECONDS_BETWEEN_ENTRIES", float(BROKER_MIN_SECONDS_BETWEEN_ENTRIES)),
+        )
         if spacing <= 0 or self._last_execution_monotonic <= 0:
             return ""
         elapsed = time.monotonic() - float(self._last_execution_monotonic)
@@ -2952,11 +2984,14 @@ class TradingCore:
         alignment = float(metadata.get("alignment_score", metadata.get("playbook_alignment_score", 0.0)) or 0.0)
         conflicts = int(metadata.get("playbook_conflict_components", 0) or 0)
 
-        min_confidence = self._env_float("BROKER_MIN_EXECUTION_CONFIDENCE", 0.64)
-        min_opportunity = self._env_float("BROKER_MIN_EXECUTION_OPPORTUNITY_SCORE", 0.66)
-        min_setup = self._env_float("BROKER_MIN_EXECUTION_SETUP_QUALITY", 0.50)
-        min_alignment = self._env_float("BROKER_MIN_EXECUTION_ALIGNMENT", 0.50)
-        max_conflicts = self._env_int("BROKER_MAX_EXECUTION_CONFLICTS", 0)
+        min_confidence = self._env_float("BROKER_MIN_EXECUTION_CONFIDENCE", float(BROKER_MIN_EXECUTION_CONFIDENCE))
+        min_opportunity = self._env_float(
+            "BROKER_MIN_EXECUTION_OPPORTUNITY_SCORE",
+            float(BROKER_MIN_EXECUTION_OPPORTUNITY_SCORE),
+        )
+        min_setup = self._env_float("BROKER_MIN_EXECUTION_SETUP_QUALITY", float(BROKER_MIN_EXECUTION_SETUP_QUALITY))
+        min_alignment = self._env_float("BROKER_MIN_EXECUTION_ALIGNMENT", float(BROKER_MIN_EXECUTION_ALIGNMENT))
+        max_conflicts = self._env_int("BROKER_MAX_EXECUTION_CONFLICTS", int(BROKER_MAX_EXECUTION_CONFLICTS))
 
         if confidence < min_confidence:
             return f"confidence {confidence:.3f} below broker floor {min_confidence:.3f}"
@@ -2985,7 +3020,7 @@ class TradingCore:
     def _broker_cycle_execution_limit(self, requested_limit: int) -> int:
         if not self._broker_balance_enabled():
             return max(1, int(requested_limit or 1))
-        configured = self._env_int("BROKER_MAX_NEW_TRADES_PER_CYCLE", 1)
+        configured = self._env_int("BROKER_MAX_NEW_TRADES_PER_CYCLE", int(BROKER_MAX_NEW_TRADES_PER_CYCLE))
         return max(1, min(max(1, int(requested_limit or 1)), configured))
 
     def _execute_ranked_survivors(self, survivors: List[Signal], limit: int = 3) -> int:
@@ -3009,7 +3044,10 @@ class TradingCore:
 
         quality_pool = self._filter_broker_execution_quality(survivors)
         if self._broker_balance_enabled():
-            support_pool_limit = max(1, self._env_int("BROKER_SUPPORT_CHECK_POOL_LIMIT", 8))
+            support_pool_limit = max(
+                1,
+                self._env_int("BROKER_SUPPORT_CHECK_POOL_LIMIT", int(BROKER_SUPPORT_CHECK_POOL_LIMIT)),
+            )
             quality_pool = quality_pool[:support_pool_limit]
         executable_pool = self._filter_broker_supported_survivors(quality_pool)
         selected_survivors = self._select_execution_survivors(
@@ -3426,9 +3464,15 @@ class TradingCore:
         open_positions = list(self.state.get_open_positions() or [])
         open_position_count = len(open_positions)
         if self._broker_balance_enabled():
-            broker_max_open = self._env_int("BROKER_MAX_OPEN_POSITIONS", 3)
-            broker_max_per_category = self._env_int("BROKER_MAX_OPEN_POSITIONS_PER_CATEGORY", 1)
-            broker_max_same_direction = self._env_int("BROKER_MAX_SAME_DIRECTION_POSITIONS", 2)
+            broker_max_open = self._env_int("BROKER_MAX_OPEN_POSITIONS", int(BROKER_MAX_OPEN_POSITIONS))
+            broker_max_per_category = self._env_int(
+                "BROKER_MAX_OPEN_POSITIONS_PER_CATEGORY",
+                int(BROKER_MAX_OPEN_POSITIONS_PER_CATEGORY),
+            )
+            broker_max_same_direction = self._env_int(
+                "BROKER_MAX_SAME_DIRECTION_POSITIONS",
+                int(BROKER_MAX_SAME_DIRECTION_POSITIONS),
+            )
             if open_position_count >= max(1, broker_max_open):
                 logger.warning(
                     f"[TradingCore] Broker cap blocked {signal.asset}: "
