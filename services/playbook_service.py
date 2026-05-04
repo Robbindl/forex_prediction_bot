@@ -276,7 +276,7 @@ _DEFAULT_PLAYBOOKS = (
 
 _PROFILES: Dict[str, _PlaybookProfile] = {
     "crypto": _PlaybookProfile(0.58, 0.48, 0.46, "5m", ("asia", "europe", "us"), 2.6, 1.20, 1.12),
-    "forex": _PlaybookProfile(0.56, 0.52, 0.52, "15m", ("asia", "europe", "us"), 2.0, 1.10, 1.00),
+    "forex": _PlaybookProfile(0.56, 0.52, 0.52, "15m", ("asia", "europe", "us"), 1.6, 0.85, 0.75),
     "commodities": _PlaybookProfile(0.57, 0.50, 0.50, "15m", ("europe", "us"), 2.1, 1.12, 1.05),
     "indices": _PlaybookProfile(0.57, 0.50, 0.50, "15m", ("us",), 2.0, 1.10, 1.05),
     "default": _PlaybookProfile(0.58, 0.52, 0.52, "15m", ("asia", "europe", "us")),
@@ -363,11 +363,12 @@ class PlaybookService:
         category_key = str(category or "").strip().lower()
         partial_rr = {
             "crypto": [1.30, 2.10],
+            "forex": [0.85, 1.25],
             "commodities": [1.20, 1.90],
             "indices": [1.15, 1.80],
         }.get(category_key, [1.15, 1.75])
         if playbook in {"reversal_exhaustion", "failed_break_reclaim"}:
-            partial_rr = [1.00, 1.55]
+            partial_rr = [0.75, 1.10] if category_key == "forex" else [1.00, 1.55]
         return {
             "style": "clean_depth_playbook",
             "playbook": playbook,

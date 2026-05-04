@@ -10,21 +10,21 @@ from config.optimization import ASSET_CLASS_TUNING
 logger = get_logger()
 
 _STOP_FALLBACK_PCT = {
-    "forex": 0.0035,
+    "forex": 0.0012,
     "crypto": 0.0090,
     "commodities": 0.0075,
     "indices": 0.0060,
 }
 
 _STOP_MIN_PCT = {
-    "forex": 0.0015,
+    "forex": 0.0006,
     "crypto": 0.0040,
     "commodities": 0.0030,
     "indices": 0.0025,
 }
 
 _STOP_MAX_PCT = {
-    "forex": 0.0060,
+    "forex": 0.0022,
     "crypto": 0.0120,
     "commodities": 0.0100,
     "indices": 0.0090,

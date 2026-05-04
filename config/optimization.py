@@ -39,9 +39,9 @@ ASSET_CLASS_TUNING = {
         # EUR/USD/GBP: Lower volatility, news-sensitive, tight spreads
         "min_confidence": 0.65,    # ← STRICTER for forex (fewer false signals)
         "news_pre_event_mins": 15,  # ← LONGER for forex (respects data releases)
-        "stop_loss_atr": 1.5,       # ← WIDER SL (forex less predictable)
-        "take_profit_atr": 1.5,
-        "target_rr": 1.8,
+        "stop_loss_atr": 1.1,       # 15m intraday forex exits should not stretch for days
+        "take_profit_atr": 1.4,
+        "target_rr": 1.55,
     },
     "commodities": {
         # Oil/Gold/Silver: Trend-driven, geopolitical surprises

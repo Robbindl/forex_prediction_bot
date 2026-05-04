@@ -547,19 +547,51 @@ class SignalDecisionEngine:
 
     @staticmethod
     def _execution_ensure_take_profit_levels(signal: Signal) -> None:
-        structure = _as_dict(signal.metadata.get("market_structure"))
+        entry = _safe_float(signal.entry_price, 0.0)
+        stop_loss = _safe_float(signal.stop_loss, 0.0)
+        take_profit = _safe_float(signal.take_profit, 0.0)
         direction = _direction_sign(signal.direction)
+
+        def _directional_levels(raw_levels: Any, max_rr: float) -> List[float]:
+            risk_distance = abs(entry - stop_loss)
+            clean_levels: List[float] = []
+            for item in list(raw_levels or []):
+                value = _safe_float(item, 0.0)
+                if value <= 0.0 or entry <= 0.0:
+                    continue
+                if direction > 0 and value <= entry:
+                    continue
+                if direction < 0 and value >= entry:
+                    continue
+                if risk_distance > 0.0:
+                    level_rr = abs(value - entry) / max(risk_distance, 1e-9)
+                    if level_rr > max_rr:
+                        continue
+                clean_levels.append(value)
+            reverse = direction < 0
+            return sorted(dict.fromkeys(clean_levels), reverse=reverse)[:5]
+
+        category_key = str(getattr(signal, "category", "") or "").strip().lower()
+        max_level_rr = {
+            "forex": 1.75,
+            "indices": 2.05,
+            "commodities": 2.20,
+            "crypto": 2.70,
+        }.get(category_key, 2.20)
+
+        existing = _directional_levels(signal.take_profit_levels, max_level_rr)
+        if existing:
+            signal.take_profit_levels = existing
+            return
+
+        structure = _as_dict(signal.metadata.get("market_structure"))
         key = "bullish_target_levels" if direction > 0 else "bearish_target_levels"
         targets = structure.get(key) or structure.get("target_levels") or []
-        clean: List[float] = []
-        for item in list(targets or []):
-            value = _safe_float(item, 0.0)
-            if value > 0.0:
-                clean.append(value)
+        clean = _directional_levels(targets, max_level_rr)
         if clean:
             signal.take_profit_levels = clean[:5]
-        elif signal.take_profit and not signal.take_profit_levels:
-            signal.take_profit_levels = [float(signal.take_profit)]
+        elif take_profit and not signal.take_profit_levels:
+            signal.take_profit_levels = [float(take_profit)]
 
     def _execution_late_entry_risk_gate(
         self,
