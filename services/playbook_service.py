@@ -503,6 +503,13 @@ class PlaybookService:
             "dom_authority_tier": "none",
         }
 
+    @staticmethod
+    def _depth_wait_reason(depth: Dict[str, Any]) -> str:
+        reason = str(depth.get("true_depth_reason") or "").strip().lower()
+        if reason in {"", "ready"}:
+            return ""
+        return reason
+
     def _depth_readiness(
         self,
         micro: Dict[str, Any],
@@ -1158,11 +1165,17 @@ class PlaybookService:
                 return "depth_context_pressure_wait:depth_pressure_weak"
             if bool(micro.get("depth_available")):
                 depth = self._depth_readiness(micro, asset=asset, category=category)
-                return f"depth_context_pressure_wait:{depth.get('true_depth_reason') or 'depth_not_ready'}"
+                depth_reason = self._depth_wait_reason(depth)
+                if depth_reason:
+                    return f"depth_context_pressure_wait:{depth_reason}"
+            if str(structure.get("structure_bias") or "").strip().lower() == "neutral":
+                return "depth_context_pressure_wait:neutral_structure"
             return "depth_context_pressure_wait:no_direction"
         confluence = self._context_directional_confluence(context, direction)
         if not confluence.get("true_depth_ready") and bool(confluence.get("depth_available")):
-            return f"depth_context_pressure_wait:{confluence.get('true_depth_reason') or 'depth_not_ready'}"
+            depth_reason = self._depth_wait_reason(confluence)
+            if depth_reason:
+                return f"depth_context_pressure_wait:{depth_reason}"
         if int(confluence.get("conflict_components", 0) or 0) > 0:
             return "depth_context_pressure_wait:context_conflict"
         if int(confluence.get("support_components", 0) or 0) <= 0 and bool(confluence.get("depth_available")):
