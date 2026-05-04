@@ -1210,7 +1210,10 @@ class PlaybookService:
         rejected_details: List[Dict[str, Any]],
     ) -> str:
         direction = _structure_direction(structure, context)
+        structure_bias = str(structure.get("structure_bias") or "").strip().lower()
         if not direction:
+            if structure_bias == "neutral":
+                return "depth_context_pressure_wait:neutral_structure"
             micro = dict(context.get("market_microstructure") or {})
             pressure, pressure_ready = _trusted_depth_pressure_score(micro, asset=asset, category=category)
             if pressure_ready:
@@ -1220,10 +1223,13 @@ class PlaybookService:
                 depth_reason = self._depth_wait_reason(depth)
                 if depth_reason:
                     return f"depth_context_pressure_wait:{depth_reason}"
-            if str(structure.get("structure_bias") or "").strip().lower() == "neutral":
-                return "depth_context_pressure_wait:neutral_structure"
             return "depth_context_pressure_wait:no_direction"
         confluence = self._context_directional_confluence(context, direction)
+        if rejected_details:
+            return _best_rejected_reason(rejected_details)
+        builder_reason = self._builder_selection_wait_reason(structure, confluence, direction)
+        if builder_reason not in {"no_builder_selected", "context_support_missing"}:
+            return f"depth_context_pressure_wait:{builder_reason}"
         if not confluence.get("true_depth_ready") and bool(confluence.get("depth_available")):
             depth_reason = self._depth_wait_reason(confluence)
             if depth_reason:
@@ -1232,11 +1238,8 @@ class PlaybookService:
             return "depth_context_pressure_wait:context_conflict"
         if int(confluence.get("support_components", 0) or 0) <= 0 and bool(confluence.get("depth_available")):
             return "depth_context_pressure_wait:context_support_missing"
-        if str(structure.get("structure_bias") or "").strip().lower() == "neutral":
+        if structure_bias == "neutral":
             return "depth_context_pressure_wait:neutral_structure"
-        if rejected_details:
-            return _best_rejected_reason(rejected_details)
-        builder_reason = self._builder_selection_wait_reason(structure, confluence, direction)
         return f"depth_context_pressure_wait:{builder_reason}"
 
     def pick_seed(
