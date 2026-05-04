@@ -251,6 +251,10 @@ class SystemState:
         self._daily_trades:     int   = 0
         self._daily_pnl:        float = 0.0
         self._daily_start_balance: float = self._balance
+        self._broker_daily_start_balance: float = 0.0
+        self._broker_daily_date: str = _trading_day_date()
+        self._broker_daily_account_id: str = ""
+        self._broker_daily_environment: str = ""
         self._last_save_date:   str   = _trading_day_date()
         self._cooldowns:        Dict[str, datetime] = {}
         self._strategy_stats:   Dict[str, Dict] = defaultdict(lambda: {"wins": 0, "losses": 0, "pnl": 0.0})
@@ -588,6 +592,51 @@ class SystemState:
         with self._lock:
             return self._daily_start_balance
 
+    @property
+    def broker_daily_guard_context(self) -> Dict[str, Any]:
+        with self._lock:
+            return {
+                "date": self._broker_daily_date,
+                "start_balance": self._broker_daily_start_balance,
+                "account_id": self._broker_daily_account_id,
+                "environment": self._broker_daily_environment,
+            }
+
+    def ensure_broker_daily_anchor(
+        self,
+        balance: float,
+        *,
+        trading_date: Optional[str] = None,
+        account_id: str = "",
+        environment: str = "",
+    ) -> bool:
+        safe_date = str(trading_date or _trading_day_date()).strip() or _trading_day_date()
+        safe_account_id = str(account_id or "").strip()
+        safe_environment = str(environment or "").strip().lower()
+        safe_balance = max(0.0, float(balance or 0.0))
+        with self._lock:
+            reset_required = (
+                self._broker_daily_date != safe_date
+                or self._broker_daily_start_balance <= 0.0
+                or (safe_account_id and self._broker_daily_account_id and safe_account_id != self._broker_daily_account_id)
+                or (safe_environment and self._broker_daily_environment and safe_environment != self._broker_daily_environment)
+            )
+            changed = False
+            if reset_required:
+                anchor_balance = safe_balance if safe_balance > 0.0 else max(0.0, self._balance)
+                self._broker_daily_start_balance = anchor_balance
+                self._broker_daily_date = safe_date
+                changed = True
+            if safe_account_id and self._broker_daily_account_id != safe_account_id:
+                self._broker_daily_account_id = safe_account_id
+                changed = True
+            if safe_environment and self._broker_daily_environment != safe_environment:
+                self._broker_daily_environment = safe_environment
+                changed = True
+            if changed:
+                self._persist_json()
+            return reset_required
+
     def check_day_rollover(self) -> bool:
         with self._lock:
             today = _trading_day_date()
@@ -596,6 +645,10 @@ class SystemState:
                 self._daily_trades   = 0
                 self._daily_pnl      = 0.0
                 self._daily_start_balance = self._balance
+                self._broker_daily_start_balance = 0.0
+                self._broker_daily_date = today
+                self._broker_daily_account_id = ""
+                self._broker_daily_environment = ""
                 self._last_save_date = today
                 self._purge_expired_cooldowns()
                 self._persist_json()
@@ -776,6 +829,10 @@ class SystemState:
                 "daily_trades":    self._daily_trades,
                 "daily_pnl":       self._daily_pnl,
                 "daily_start_balance": self._daily_start_balance,
+                "broker_daily_start_balance": self._broker_daily_start_balance,
+                "broker_daily_date": self._broker_daily_date,
+                "broker_daily_account_id": self._broker_daily_account_id,
+                "broker_daily_environment": self._broker_daily_environment,
                 "last_save_date":  self._last_save_date,
                 "cooldowns":       {k: v.isoformat() for k, v in self._cooldowns.items() if v > datetime.now()},
                 "strategy_stats":  dict(self._strategy_stats),
@@ -803,6 +860,10 @@ class SystemState:
             self._daily_start_balance = float(
                 raw.get("daily_start_balance", max(0.0, self._balance - self._daily_pnl))
             )
+            self._broker_daily_start_balance = float(raw.get("broker_daily_start_balance", 0.0) or 0.0)
+            self._broker_daily_date = str(raw.get("broker_daily_date", _trading_day_date()) or _trading_day_date())
+            self._broker_daily_account_id = str(raw.get("broker_daily_account_id", "") or "")
+            self._broker_daily_environment = str(raw.get("broker_daily_environment", "") or "")
             self._last_save_date  = raw.get("last_save_date", _trading_day_date())
 
             now = datetime.now()
@@ -841,6 +902,10 @@ class SystemState:
                 self._daily_trades   = 0
                 self._daily_pnl      = 0.0
                 self._daily_start_balance = self._balance
+                self._broker_daily_start_balance = 0.0
+                self._broker_daily_date = today
+                self._broker_daily_account_id = ""
+                self._broker_daily_environment = ""
                 self._last_save_date = today
 
             logger.info(f"[State] JSON loaded — balance=${self._balance:.2f}")
@@ -972,6 +1037,11 @@ class SystemState:
                 "balance":         self._balance,
                 "daily_trades":    self._daily_trades,
                 "daily_pnl":       self._daily_pnl,
+                "daily_start_balance": self._daily_start_balance,
+                "broker_daily_start_balance": self._broker_daily_start_balance,
+                "broker_daily_date": self._broker_daily_date,
+                "broker_daily_account_id": self._broker_daily_account_id,
+                "broker_daily_environment": self._broker_daily_environment,
                 "open_positions":  list(self._open_positions.values()),
                 "cooldowns":       self.get_all_cooldowns(),
             }
@@ -986,6 +1056,10 @@ class SystemState:
             self._daily_trades = 0
             self._daily_pnl = 0.0
             self._daily_start_balance = self._balance
+            self._broker_daily_start_balance = 0.0
+            self._broker_daily_date = _trading_day_date()
+            self._broker_daily_account_id = ""
+            self._broker_daily_environment = ""
             self._persist_json()
 
 

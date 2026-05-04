@@ -5023,6 +5023,7 @@ def _authoritative_account_summary(core: Any = None, positions: Any = None) -> D
     summary["closed_trades"] = int(summary.get("closed_trades", len(closed_trades or [])) or 0)
     summary["total_trades"] = int(summary.get("total_trades", summary["closed_trades"]) or 0)
     summary["daily_trades"] = int(summary.get("daily_trades", 0) or 0)
+    dashboard_state = _dashboard_state()
     try:
         from config.config import EXECUTION_MODE, IG_EXECUTION_ENABLED
 
@@ -5032,8 +5033,33 @@ def _authoritative_account_summary(core: Any = None, positions: Any = None) -> D
             if ig_account.get("authenticated") and ig_account.get("balance") is not None:
                 broker_balance = float(ig_account.get("balance") or 0.0)
                 if broker_balance > 0:
-                    summary["balance"] = round(broker_balance, 2)
+                    broker_open_pnl = float(ig_account.get("profit_loss") or 0.0)
+                    broker_equity = round(broker_balance + broker_open_pnl, 2)
+                    ensure_anchor = getattr(dashboard_state, "ensure_broker_daily_anchor", None) if dashboard_state is not None else None
+                    if callable(ensure_anchor):
+                        try:
+                            ensure_anchor(
+                                broker_balance,
+                                account_id=str(ig_account.get("account_id") or ""),
+                                environment=str(ig_account.get("environment") or ""),
+                            )
+                        except Exception:
+                            pass
+                    broker_ctx = dict(getattr(dashboard_state, "broker_daily_guard_context", {}) or {}) if dashboard_state is not None else {}
+                    broker_day_start = float(broker_ctx.get("start_balance") or broker_balance)
+                    broker_realized_daily_pnl = round(broker_balance - broker_day_start, 2)
+                    broker_daily_pnl = round(broker_realized_daily_pnl + broker_open_pnl, 2)
+
+                    summary["balance"] = broker_equity
                     summary["realized_balance"] = round(broker_balance, 2)
+                    summary["open_pnl"] = round(broker_open_pnl, 2)
+                    summary["daily_pnl"] = broker_daily_pnl
+                    summary["realized_daily_pnl"] = broker_realized_daily_pnl
+                    summary["initial_balance"] = round(broker_day_start, 2)
+                    summary["balance_delta"] = broker_daily_pnl
+                    summary["account_state"] = (
+                        "loss" if broker_daily_pnl < -0.005 else "gain" if broker_daily_pnl > 0.005 else "flat"
+                    )
                     summary["balance_source"] = f"ig_{ig_account.get('environment') or mode}"
                     summary["broker_account"] = {
                         "broker": "ig",
@@ -5041,14 +5067,16 @@ def _authoritative_account_summary(core: Any = None, positions: Any = None) -> D
                         "account_id": ig_account.get("account_id"),
                         "currency": ig_account.get("currency"),
                         "balance": broker_balance,
+                        "equity": broker_equity,
                         "available": ig_account.get("available"),
-                        "profit_loss": ig_account.get("profit_loss"),
+                        "profit_loss": broker_open_pnl,
+                        "day_start_balance": round(broker_day_start, 2),
                     }
-                    live_balance = broker_balance
+                    live_balance = broker_equity
     except Exception:
         pass
-    summary["account_state"] = "loss" if summary["balance_delta"] < -0.005 else "gain" if summary["balance_delta"] > 0.005 else "flat"
-    summary["balance_delta"] = round(float(summary.get("balance", live_balance) or live_balance) - initial_balance, 2)
+    final_initial_balance = float(summary.get("initial_balance", initial_balance) or initial_balance)
+    summary["balance_delta"] = round(float(summary.get("balance", live_balance) or live_balance) - final_initial_balance, 2)
     summary["account_state"] = "loss" if summary["balance_delta"] < -0.005 else "gain" if summary["balance_delta"] > 0.005 else "flat"
     return summary
 

@@ -2690,6 +2690,10 @@ class TradingCore:
         now = datetime.now(tz)
         return datetime(now.year, now.month, now.day, tzinfo=tz) + timedelta(days=1)
 
+    @classmethod
+    def _broker_daily_guard_trading_date(cls) -> str:
+        return datetime.now(cls._broker_daily_guard_timezone()).date().isoformat()
+
     @staticmethod
     def _broker_daily_guard_status_label(status: str) -> str:
         return "daily loss limit" if status == "loss_limit" else "daily profit target"
@@ -2704,13 +2708,6 @@ class TradingCore:
             broker_positions.append(pos)
 
         floating_pnl = round(sum(self._float_or_zero(pos.get("pnl")) for pos in broker_positions), 2)
-        realized_pnl = round(self._float_or_zero(getattr(self.state, "daily_pnl", 0.0)), 2)
-        daily_pnl = round(realized_pnl + floating_pnl, 2)
-        balance = max(0.0, self._float_or_zero(getattr(self.state, "balance", 0.0) or self.balance))
-        day_start_balance = self._float_or_zero(getattr(self.state, "daily_start_balance", 0.0))
-        if day_start_balance <= 0:
-            day_start_balance = balance - realized_pnl
-        day_start_balance = max(1.0, day_start_balance)
         loss_pct = max(
             0.1,
             self._env_float("BROKER_DAILY_MAX_LOSS_PCT", float(BROKER_DAILY_MAX_LOSS_PCT)),
@@ -2722,6 +2719,68 @@ class TradingCore:
                 float(BROKER_DAILY_PROFIT_TARGET_PCT),
             ),
         )
+        reset_at = self._broker_daily_guard_next_reset()
+        snapshot = {
+            "positions": broker_positions,
+            "open_count": len(broker_positions),
+            "losing_count": len([pos for pos in broker_positions if self._float_or_zero(pos.get("pnl")) < 0.0]),
+            "balance": 0.0,
+            "equity": 0.0,
+            "day_start_balance": 0.0,
+            "realized_pnl": 0.0,
+            "floating_pnl": floating_pnl,
+            "daily_pnl": 0.0,
+            "loss_pct": loss_pct,
+            "profit_pct": profit_pct,
+            "loss_limit": 0.0,
+            "profit_target": 0.0,
+            "status": "",
+            "triggered": False,
+            "reset_at": reset_at,
+            "reset_at_eat": reset_at.strftime("%Y-%m-%d %H:%M EAT"),
+            "active": False,
+        }
+        summary = dict(getattr(self, "_last_broker_balance_snapshot", {}) or {})
+        if not summary.get("authenticated") or summary.get("balance") is None:
+            self._sync_broker_account_balance(force=False)
+            summary = dict(getattr(self, "_last_broker_balance_snapshot", {}) or {})
+        if not summary.get("authenticated"):
+            return snapshot
+
+        balance_raw = summary.get("balance")
+        if balance_raw is None:
+            return snapshot
+        broker_balance = max(0.0, self._float_or_zero(balance_raw))
+        if broker_balance <= 0.0:
+            return snapshot
+
+        account_id = str(summary.get("account_id") or "")
+        environment = str(summary.get("environment") or "")
+        ensure_anchor = getattr(self.state, "ensure_broker_daily_anchor", None)
+        if callable(ensure_anchor):
+            try:
+                ensure_anchor(
+                    broker_balance,
+                    trading_date=self._broker_daily_guard_trading_date(),
+                    account_id=account_id,
+                    environment=environment,
+                )
+            except Exception:
+                pass
+
+        broker_ctx = dict(getattr(self.state, "broker_daily_guard_context", {}) or {})
+        day_start_balance = self._float_or_zero(broker_ctx.get("start_balance"))
+        if day_start_balance <= 0.0:
+            day_start_balance = broker_balance
+        day_start_balance = max(1.0, day_start_balance)
+
+        broker_open_pnl_raw = summary.get("profit_loss")
+        broker_open_pnl = round(
+            floating_pnl if broker_open_pnl_raw is None else self._float_or_zero(broker_open_pnl_raw),
+            2,
+        )
+        realized_pnl = round(broker_balance - day_start_balance, 2)
+        daily_pnl = round(realized_pnl + broker_open_pnl, 2)
         loss_limit = round(day_start_balance * (loss_pct / 100.0), 2)
         profit_target = round(day_start_balance * (profit_pct / 100.0), 2)
         status = ""
@@ -2730,25 +2789,25 @@ class TradingCore:
         elif daily_pnl >= abs(profit_target):
             status = "profit_target"
 
-        reset_at = self._broker_daily_guard_next_reset()
-        return {
-            "positions": broker_positions,
-            "open_count": len(broker_positions),
-            "losing_count": len([pos for pos in broker_positions if self._float_or_zero(pos.get("pnl")) < 0.0]),
-            "balance": round(balance, 2),
-            "day_start_balance": round(day_start_balance, 2),
-            "realized_pnl": realized_pnl,
-            "floating_pnl": floating_pnl,
-            "daily_pnl": daily_pnl,
-            "loss_pct": loss_pct,
-            "profit_pct": profit_pct,
-            "loss_limit": loss_limit,
-            "profit_target": profit_target,
-            "status": status,
-            "triggered": bool(status),
-            "reset_at": reset_at,
-            "reset_at_eat": reset_at.strftime("%Y-%m-%d %H:%M EAT"),
-        }
+        snapshot.update(
+            {
+                "balance": round(broker_balance, 2),
+                "equity": round(broker_balance + broker_open_pnl, 2),
+                "day_start_balance": round(day_start_balance, 2),
+                "realized_pnl": realized_pnl,
+                "floating_pnl": broker_open_pnl,
+                "daily_pnl": daily_pnl,
+                "loss_limit": loss_limit,
+                "profit_target": profit_target,
+                "status": status,
+                "triggered": bool(status),
+                "active": True,
+                "account_id": account_id,
+                "environment": environment,
+                "currency": str(summary.get("currency") or ""),
+            }
+        )
+        return snapshot
 
     def _broker_daily_guard_reason(self, snapshot: Dict[str, Any]) -> str:
         status = str(snapshot.get("status") or "")
@@ -2822,6 +2881,8 @@ class TradingCore:
         if not self._broker_balance_enabled() or not self._broker_daily_guard_enabled():
             return False
         snapshot = self._broker_daily_guard_snapshot(prices)
+        if not snapshot.get("active"):
+            return False
 
         now = time.monotonic()
         if now - float(self._last_broker_daily_guard_log or 0.0) >= 30.0:
@@ -3338,6 +3399,8 @@ class TradingCore:
         if not self._broker_balance_enabled() or not self._broker_daily_guard_enabled():
             return ""
         snapshot = self._broker_daily_guard_snapshot({})
+        if not snapshot.get("active"):
+            return ""
         status = str(snapshot.get("status") or "")
         if not status:
             return ""
@@ -3588,6 +3651,17 @@ class TradingCore:
             broker_balance = float(balance)
             if broker_balance <= 0:
                 return
+            ensure_anchor = getattr(self.state, "ensure_broker_daily_anchor", None)
+            if callable(ensure_anchor):
+                try:
+                    ensure_anchor(
+                        broker_balance,
+                        trading_date=self._broker_daily_guard_trading_date(),
+                        account_id=str(summary.get("account_id") or ""),
+                        environment=str(summary.get("environment") or ""),
+                    )
+                except Exception:
+                    pass
             current = float(self.state.balance or 0.0)
             if abs(current - broker_balance) < 0.01:
                 return
