@@ -173,14 +173,16 @@ def _candle_store_summary(wipe_candles: bool) -> dict[str, object]:
     return summary
 
 
-def reset_bot_state(*, wipe_candles: bool = False) -> dict[str, object]:
+def reset_bot_state(*, wipe_candles: bool = False, balance: float | None = None) -> dict[str, object]:
+    reset_balance = float(DEFAULT_BALANCE if balance is None else balance)
     db_counts = _reset_database()
-    _write_clean_state(DEFAULT_BALANCE)
+    _write_clean_state(reset_balance)
     file_summary = _clear_files()
     candle_summary = _candle_store_summary(wipe_candles)
 
     return {
         "default_balance": float(DEFAULT_BALANCE),
+        "reset_balance": reset_balance,
         "database_counts_after_reset": db_counts,
         "state_file": str(STATE_FILE),
         "file_cleanup": file_summary,
@@ -195,8 +197,14 @@ def main() -> int:
         action="store_true",
         help="Also remove the local candle store. Off by default.",
     )
+    parser.add_argument(
+        "--balance",
+        type=float,
+        default=None,
+        help="Starting balance to write into the clean state file. Defaults to DEFAULT_BALANCE.",
+    )
     args = parser.parse_args()
-    summary = reset_bot_state(wipe_candles=args.wipe_candles)
+    summary = reset_bot_state(wipe_candles=args.wipe_candles, balance=args.balance)
     print(json.dumps(summary, indent=2))
     return 0
 
