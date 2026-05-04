@@ -11,6 +11,7 @@ import sys
 import threading
 import time
 import traceback
+import uuid
 from bisect import bisect_right
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -35,6 +36,9 @@ from utils.api_errors import (
 )
 
 logger = get_logger()
+
+DASHBOARD_COMMAND_QUEUE = "DASHBOARD_COMMAND_QUEUE"
+DASHBOARD_COMMAND_RESPONSE_PREFIX = "DASHBOARD_COMMAND_RESPONSE:"
 
 # ── Market hours helper ───────────────────────────────────────────────────────
 try:
@@ -4592,6 +4596,89 @@ def _extract_broker_execution_fields(position: Dict[str, Any]) -> Dict[str, Any]
     }
 
 
+def _bot_command_response_key(request_id: str) -> str:
+    return f"{DASHBOARD_COMMAND_RESPONSE_PREFIX}{request_id}"
+
+
+def _send_bot_command(action: str, payload: Dict[str, Any], *, timeout_seconds: float = 35.0) -> Dict[str, Any]:
+    request_id = uuid.uuid4().hex
+    command = {
+        "request_id": request_id,
+        "action": action,
+        "payload": payload,
+        "created_at": datetime.utcnow().isoformat(),
+        "source": "dashboard",
+    }
+    response_key = _bot_command_response_key(request_id)
+    try:
+        from services.redis_pool import get_client
+
+        client = get_client()
+        if client is None:
+            return {
+                "success": False,
+                "error": "Engine unavailable: Redis command bridge unavailable",
+                "bridge_unavailable": True,
+            }
+        try:
+            client.delete(response_key)
+        except Exception:
+            pass
+        client.rpush(DASHBOARD_COMMAND_QUEUE, json.dumps(command, default=str))
+        deadline = time.monotonic() + max(1.0, float(timeout_seconds or 35.0))
+        while time.monotonic() < deadline:
+            raw = client.get(response_key)
+            if raw:
+                try:
+                    client.delete(response_key)
+                except Exception:
+                    pass
+                response = json.loads(raw) if isinstance(raw, str) else json.loads(raw.decode("utf-8"))
+                if isinstance(response, dict):
+                    response.setdefault("request_id", request_id)
+                    return response
+                return {"success": False, "error": "Invalid bot command response", "request_id": request_id}
+            time.sleep(0.15)
+        return {
+            "success": False,
+            "error": "Engine unavailable: forex-bot command bridge timed out",
+            "request_id": request_id,
+            "bridge_timeout": True,
+        }
+    except Exception as exc:
+        logger.error(f"[dashboard] Bot command bridge failed: {exc}", exc_info=True)
+        return {
+            "success": False,
+            "error": f"Engine unavailable: {exc}",
+            "request_id": request_id,
+            "bridge_error": True,
+        }
+
+
+def _dashboard_close_response_status(response: Dict[str, Any]) -> int:
+    if response.get("success") or response.get("partial_success"):
+        return 200
+    if response.get("bridge_timeout"):
+        return 504
+    if response.get("bridge_unavailable") or response.get("bridge_error"):
+        return 503
+    return 200
+
+
+def _normalize_bot_close_response(response: Dict[str, Any]) -> Dict[str, Any]:
+    result = dict(response or {})
+    position = result.get("position") if isinstance(result.get("position"), dict) else {}
+    if position:
+        result.update({k: v for k, v in _extract_broker_execution_fields(position).items() if result.get(k) in (None, "")})
+    if result.get("success"):
+        broker_label = str(result.get("broker") or "paper").upper()
+        result.setdefault(
+            "message",
+            f"{broker_label} position closed" if broker_label != "PAPER" else "Position closed",
+        )
+    return result
+
+
 def _build_command_center_enriched_positions(
     positions: Any,
     live_snapshots: Optional[Dict[str, Dict[str, Any]]] = None,
@@ -8582,7 +8669,15 @@ def api_close_position():
             return jsonify({"success": False, "error": "trade_id required"}), 400
         core = _core()
         if not core:
-            return jsonify({"success": False, "error": "Engine unavailable"}), 503
+            response = _normalize_bot_close_response(
+                _send_bot_command(
+                    "close_position",
+                    {"trade_id": trade_id, "reason": "Dashboard Manual Close"},
+                )
+            )
+            if response.get("success"):
+                _invalidate_cache_prefixes("risk_portfolio", "closed_trades:", "trade_history:", "strategy_performance:", "page_overview:command_center:", "page_overview:risk_dashboard:")
+            return jsonify(response), _dashboard_close_response_status(response)
         positions = core.state.get_open_positions() if hasattr(getattr(core, "state", None), "get_open_positions") else core.get_positions()
         position = next((pos for pos in list(positions or []) if str(pos.get("trade_id") or "") == str(trade_id)), None)
         broker_fields = _extract_broker_execution_fields(position or {})
@@ -8628,7 +8723,17 @@ def api_close_bulk():
         category = data.get("category", "")
         core = _core()
         if not core:
-            return jsonify({"success": False, "error": "Engine unavailable"}), 503
+            response = _send_bot_command(
+                "close_positions_bulk",
+                {
+                    "mode": mode,
+                    "category": category,
+                    "reason": "Dashboard Bulk Close",
+                },
+            )
+            if response.get("success") or response.get("partial_success"):
+                _invalidate_cache_prefixes("risk_portfolio", "closed_trades:", "trade_history:", "strategy_performance:", "page_overview:command_center:", "page_overview:risk_dashboard:")
+            return jsonify(response), _dashboard_close_response_status(response)
         positions = core.state.get_open_positions()
         closed, skipped = [], []
         for pos in positions:

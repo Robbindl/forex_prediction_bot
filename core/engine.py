@@ -43,6 +43,9 @@ logger = get_logger()
 COMMAND_CENTER_CONTEXT_LOG_KEY = "COMMAND_CENTER_CONTEXT_LOG"
 COMMAND_CENTER_CONTEXT_UPDATE_CHANNEL = "COMMAND_CENTER_CONTEXT_UPDATE"
 COMMAND_CENTER_CONTEXT_LOG_LIMIT = 199
+DASHBOARD_COMMAND_QUEUE = "DASHBOARD_COMMAND_QUEUE"
+DASHBOARD_COMMAND_RESPONSE_PREFIX = "DASHBOARD_COMMAND_RESPONSE:"
+DASHBOARD_COMMAND_RESPONSE_TTL_SECONDS = 90
 
 
 def _get_news_event(category: str) -> dict:
@@ -209,6 +212,8 @@ class TradingCore:
         self._last_broker_balance_sync = 0.0
         self._last_broker_balance_snapshot: Dict[str, Any] = {}
         self._broker_issue_alerts: Dict[str, float] = {}
+        self._dashboard_command_listener_started = False
+        self._dashboard_command_thread: Optional[threading.Thread] = None
 
         logger.info(f"[TradingCore] Init — balance=${balance} strategy={strategy_mode}")
 
@@ -1813,6 +1818,231 @@ class TradingCore:
             return
         self._paper_trader.on_trade_closed = self._handle_trade_closed_callback
         self._paper_trader.on_position_updated = self._handle_position_updated_callback
+
+    def start_dashboard_command_listener(self) -> bool:
+        if self._dashboard_command_listener_started:
+            return True
+        try:
+            from services.redis_pool import ping as _redis_ping
+
+            if not _redis_ping():
+                logger.warning("[TradingCore] Dashboard command bridge unavailable — Redis not reachable")
+                return False
+        except Exception as exc:
+            logger.warning(f"[TradingCore] Dashboard command bridge unavailable: {exc}")
+            return False
+        self._dashboard_command_listener_started = True
+        self._dashboard_command_thread = threading.Thread(
+            target=self._dashboard_command_loop,
+            name="DashboardCommandBridge",
+            daemon=True,
+        )
+        self._dashboard_command_thread.start()
+        logger.info("[TradingCore] Dashboard command bridge listening")
+        return True
+
+    @staticmethod
+    def _dashboard_command_response_key(request_id: str) -> str:
+        return f"{DASHBOARD_COMMAND_RESPONSE_PREFIX}{request_id}"
+
+    def _publish_positions_snapshot(self) -> None:
+        try:
+            from redis_broker import broker as _redis_broker
+
+            _redis_broker.publish_positions(
+                self.state.get_open_positions(),
+                self.state.balance,
+            )
+        except Exception:
+            pass
+
+    @staticmethod
+    def _dashboard_broker_fields(position: Dict[str, Any]) -> Dict[str, Any]:
+        metadata = position.get("metadata") if isinstance(position.get("metadata"), dict) else {}
+        broker_execution = metadata.get("broker_execution") if isinstance(metadata.get("broker_execution"), dict) else {}
+        broker_close = metadata.get("broker_close") if isinstance(metadata.get("broker_close"), dict) else {}
+        broker_sizing = broker_execution.get("broker_sizing") if isinstance(broker_execution.get("broker_sizing"), dict) else {}
+        broker = str(position.get("broker") or broker_execution.get("broker") or "").strip().lower()
+        execution_mode = str(position.get("execution_mode") or "").strip()
+        if not broker and execution_mode.lower().startswith("ig"):
+            broker = "ig"
+        broker_size = position.get("broker_position_size")
+        if broker_size in (None, ""):
+            broker_size = broker_sizing.get("broker_size")
+        try:
+            broker_size = float(broker_size or 0.0)
+        except Exception:
+            broker_size = 0.0
+        return {
+            "broker": broker or "paper",
+            "execution_mode": execution_mode or str(broker_execution.get("environment") or "").strip(),
+            "broker_symbol": str(
+                position.get("broker_symbol")
+                or broker_execution.get("epic")
+                or broker_close.get("epic")
+                or ""
+            ),
+            "broker_position_size": broker_size,
+            "broker_trade_id": str(
+                position.get("broker_trade_id")
+                or broker_execution.get("deal_id")
+                or broker_close.get("order_id")
+                or ""
+            ),
+            "broker_deal_reference": str(
+                position.get("broker_deal_reference")
+                or broker_execution.get("deal_reference")
+                or broker_close.get("deal_reference")
+                or ""
+            ),
+            "broker_close_status": str(
+                position.get("broker_close_status")
+                or broker_close.get("status")
+                or broker_close.get("deal_status")
+                or ""
+            ),
+        }
+
+    def _dashboard_close_position_command(self, payload: Dict[str, Any]) -> Dict[str, Any]:
+        trade_id = str(payload.get("trade_id") or "").strip()
+        if not trade_id:
+            return {"success": False, "error": "trade_id required"}
+        position = self.state.get_open_position(trade_id)
+        if not position:
+            return {"success": False, "trade_id": trade_id, "error": "Trade not found"}
+        broker_fields = self._dashboard_broker_fields(position)
+        result = self.close_position_manually(
+            trade_id,
+            reason=str(payload.get("reason") or "Dashboard Manual Close"),
+        )
+        if not result:
+            broker = str(broker_fields.get("broker") or "paper").lower()
+            error = (
+                f"{broker.upper()} close failed; local position left open"
+                if broker != "paper"
+                else "Position close failed"
+            )
+            return {
+                "success": False,
+                "trade_id": trade_id,
+                "error": error,
+                **broker_fields,
+            }
+        self._publish_positions_snapshot()
+        result_broker_fields = self._dashboard_broker_fields(result)
+        broker_label = str(result_broker_fields.get("broker") or "paper").upper()
+        return {
+            "success": True,
+            "trade_id": trade_id,
+            "message": f"{broker_label} position closed" if broker_label != "PAPER" else "Position closed",
+            "asset": result.get("asset"),
+            "pnl": result.get("pnl"),
+            "exit_price": result.get("exit_price"),
+            "position": result,
+            **result_broker_fields,
+        }
+
+    def _dashboard_close_bulk_command(self, payload: Dict[str, Any]) -> Dict[str, Any]:
+        mode = str(payload.get("mode") or "all").strip().lower()
+        category = str(payload.get("category") or "").strip().lower()
+        positions = list(self.state.get_open_positions() or [])
+        closed: List[Dict[str, Any]] = []
+        skipped: List[Dict[str, Any]] = []
+        for pos in positions:
+            cat = str(pos.get("category") or "").strip().lower()
+            pnl = float(pos.get("pnl", 0) or 0)
+            trade_id = str(pos.get("trade_id") or "")
+            if not trade_id:
+                continue
+            if mode == "category" and cat != category:
+                continue
+            if mode == "losing" and pnl >= 0:
+                continue
+            if mode == "winning" and pnl <= 0:
+                continue
+            result = self._dashboard_close_position_command(
+                {
+                    "trade_id": trade_id,
+                    "reason": str(payload.get("reason") or "Dashboard Bulk Close"),
+                }
+            )
+            if result.get("success"):
+                closed.append(
+                    {
+                        "trade_id": trade_id,
+                        "asset": result.get("asset", pos.get("asset")),
+                        "pnl": result.get("pnl"),
+                        **self._dashboard_broker_fields(dict(result.get("position") or {})),
+                    }
+                )
+            else:
+                skipped.append(
+                    {
+                        "trade_id": trade_id,
+                        "asset": pos.get("asset"),
+                        "error": result.get("error") or "close failed",
+                        **self._dashboard_broker_fields(pos),
+                    }
+                )
+        if closed:
+            self._publish_positions_snapshot()
+        return {
+            "success": len(skipped) == 0,
+            "partial_success": bool(closed and skipped),
+            "closed": len(closed),
+            "skipped": len(skipped),
+            "closed_positions": closed,
+            "skipped_positions": skipped,
+            "mode": mode,
+            "message": f"Closed {len(closed)} position(s), skipped {len(skipped)}",
+        }
+
+    def _handle_dashboard_command(self, command: Dict[str, Any]) -> Dict[str, Any]:
+        action = str(command.get("action") or "").strip().lower()
+        payload = command.get("payload") if isinstance(command.get("payload"), dict) else {}
+        if action == "ping":
+            return {"success": True, "message": "TradingCore command bridge ready"}
+        if action == "close_position":
+            return self._dashboard_close_position_command(payload)
+        if action == "close_positions_bulk":
+            return self._dashboard_close_bulk_command(payload)
+        return {"success": False, "error": f"Unsupported dashboard command: {action or 'unknown'}"}
+
+    def _dashboard_command_loop(self) -> None:
+        while not self._stop_event.is_set():
+            try:
+                from services.redis_pool import get_client
+
+                client = get_client()
+                if client is None:
+                    time.sleep(2.0)
+                    continue
+                item = client.blpop(DASHBOARD_COMMAND_QUEUE, timeout=2)
+                if not item:
+                    continue
+                _queue_name, raw = item
+                command = json.loads(raw) if isinstance(raw, str) else json.loads(raw.decode("utf-8"))
+                request_id = str(command.get("request_id") or "").strip()
+                if not request_id:
+                    continue
+                try:
+                    response = self._handle_dashboard_command(command)
+                except Exception as exc:
+                    logger.error(f"[TradingCore] Dashboard command failed: {exc}", exc_info=True)
+                    response = {"success": False, "error": str(exc)}
+                response.setdefault("request_id", request_id)
+                response.setdefault("source", "forex-bot")
+                try:
+                    client.setex(
+                        self._dashboard_command_response_key(request_id),
+                        DASHBOARD_COMMAND_RESPONSE_TTL_SECONDS,
+                        json.dumps(response, default=str),
+                    )
+                except Exception as exc:
+                    logger.debug(f"[TradingCore] Dashboard command response failed: {exc}")
+            except Exception as exc:
+                logger.warning(f"[TradingCore] Dashboard command bridge error: {exc} — retrying in 5s")
+                time.sleep(5.0)
 
     @staticmethod
     def _cycle_wait_duration(elapsed: float, scan_interval: float) -> float:
@@ -5749,6 +5979,7 @@ class TradingCore:
             pnl=round(pnl, 4),
             reason=reason,
         )
+        self._publish_positions_snapshot()
 
     def close_position_manually(self, trade_id: str, *, reason: str = "Manual Close") -> Optional[Dict]:
         pos = self.state.get_open_position(trade_id)

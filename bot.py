@@ -708,6 +708,12 @@ def _start_pre_bot_services(engine, args) -> None:
                 router.set_asset_route(asset, "ig")
         engine.exchange_router = router
         try:
+            start_command_bridge = getattr(engine, "start_dashboard_command_listener", None)
+            if callable(start_command_bridge):
+                start_command_bridge()
+        except Exception as exc:
+            logger.debug(f"[bot] Dashboard command bridge skipped: {exc}")
+        try:
             sync_balance = getattr(engine, "_sync_broker_account_balance", None)
             if callable(sync_balance):
                 sync_balance(force=True)

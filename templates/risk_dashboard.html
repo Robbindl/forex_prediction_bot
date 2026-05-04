@@ -1095,9 +1095,9 @@ async function riskClose(mode){
   if(!confirm('Close all '+label+' positions?'))return;
   try{
     let r;
-    if(isCategory) r=await fetchProtectedJson('/api/position/close-bulk',{method:'POST',timeoutMs:15000,body:JSON.stringify({mode:'category',category:mode})});
-    else if(mode==='all') r=await fetchProtectedJson('/api/position/close-bulk',{method:'POST',timeoutMs:15000,body:JSON.stringify({mode:'all'})});
-    else r=await fetchProtectedJson('/api/position/close-bulk',{method:'POST',timeoutMs:15000,body:JSON.stringify({mode:mode})});
+    if(isCategory) r=await fetchProtectedJson('/api/position/close-bulk',{method:'POST',timeoutMs:45000,body:JSON.stringify({mode:'category',category:mode})});
+    else if(mode==='all') r=await fetchProtectedJson('/api/position/close-bulk',{method:'POST',timeoutMs:45000,body:JSON.stringify({mode:'all'})});
+    else r=await fetchProtectedJson('/api/position/close-bulk',{method:'POST',timeoutMs:45000,body:JSON.stringify({mode:mode})});
     const closed=Number(r.closed||0), skipped=Number(r.skipped||0);
     const ok=r.success||closed>0;
     alert(ok?'✅ '+(r.message||('Closed '+closed+' position(s)'))+(skipped?' · '+skipped+' skipped':''):'❌ '+(r.error||'Failed'));

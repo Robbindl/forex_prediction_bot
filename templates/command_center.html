@@ -2105,11 +2105,11 @@ async function executeClose(){
   try{
     let r;
     if(mode==='single'){
-      r=await fetchProtectedJson('/api/position/close',{method:'POST',timeoutMs:15000,body:JSON.stringify({trade_id:tid})});
+      r=await fetchProtectedJson('/api/position/close',{method:'POST',timeoutMs:45000,body:JSON.stringify({trade_id:tid})});
     } else {
       const payload={mode:mode==='category'?'category':mode==='filter'?filter:'all'};
       if(mode==='category')payload.category=cat;
-      r=await fetchProtectedJson('/api/position/close-bulk',{method:'POST',timeoutMs:15000,body:JSON.stringify(payload)});
+      r=await fetchProtectedJson('/api/position/close-bulk',{method:'POST',timeoutMs:45000,body:JSON.stringify(payload)});
     }
     const ok=r.success||(Number(r.closed||0)>0);
     const skipped=Number(r.skipped||0);
