@@ -29,6 +29,17 @@ cache = Cache(default_ttl=MARKET_DATA_OHLCV_CACHE_TTL)
 _shared_fetcher: Optional["DataFetcher"] = None
 _shared_fetcher_lock = threading.Lock()
 
+_OHLCV_INTERVAL_SECONDS = {
+    "1m": 60,
+    "3m": 180,
+    "5m": 300,
+    "15m": 900,
+    "30m": 1800,
+    "1h": 3600,
+    "4h": 14400,
+    "1d": 86400,
+}
+
 
 def get_shared_fetcher() -> "DataFetcher":
     global _shared_fetcher
@@ -480,6 +491,49 @@ class DataFetcher:
             return False
         required = max(1, int(math.ceil(float(periods) * float(LOCAL_CANDLE_STORE_REQUIRED_COVERAGE))))
         return len(df) >= required
+
+    @staticmethod
+    def _latest_ohlcv_freshness(
+        df: Optional[pd.DataFrame],
+        interval: str,
+        normalized_end: Optional[pd.Timestamp],
+    ) -> Tuple[bool, Optional[float], Optional[float]]:
+        if normalized_end is not None:
+            return True, None, None
+        if df is None or df.empty:
+            return False, None, None
+        try:
+            latest = pd.Timestamp(df.index.max())
+            if latest.tzinfo is None:
+                latest = latest.tz_localize("UTC")
+            else:
+                latest = latest.tz_convert("UTC")
+            age = max(0.0, time.time() - float(latest.timestamp()))
+        except Exception:
+            return False, None, None
+        interval_seconds = int(_OHLCV_INTERVAL_SECONDS.get(str(interval or "").lower(), 900))
+        max_age = float(max(interval_seconds * 3, 180))
+        return age <= max_age, round(age, 3), round(max_age, 3)
+
+    def _stamp_ohlcv_freshness(
+        self,
+        meta: Dict[str, Any],
+        df: Optional[pd.DataFrame],
+        interval: str,
+        normalized_end: Optional[pd.Timestamp],
+    ) -> Tuple[Dict[str, Any], bool]:
+        fresh, age, max_age = self._latest_ohlcv_freshness(df, interval, normalized_end)
+        stamped = dict(meta or {})
+        if age is not None:
+            stamped["ohlcv_latest_age_seconds"] = age
+        if max_age is not None:
+            stamped["ohlcv_max_age_seconds"] = max_age
+        stamped["ohlcv_fresh_for_latest"] = bool(fresh)
+        if not fresh and normalized_end is None:
+            stamped["stale_ohlcv_rejected"] = True
+            stamped.setdefault("error_code", "stale_ohlcv")
+            stamped.setdefault("message", "Latest OHLCV data is stale for live signal generation.")
+        return stamped, fresh
 
     def _has_exchange_commodity_ohlcv_support(self, asset: str, category: str) -> bool:
         if str(category or "").strip().lower() != "commodities":
@@ -1331,7 +1385,7 @@ class DataFetcher:
             f"{int(bool(prefer_local))}:{preference_token}"
         )
 
-        cached = self._cached_ohlcv_frame(cache_key, meta_key)
+        cached = self._cached_ohlcv_frame(cache_key, meta_key, interval, normalized_end)
         if cached is not None:
             return cached
 
@@ -1384,8 +1438,15 @@ class DataFetcher:
                 local_rows=int(len(local_partial_df)),
                 requested_rows=int(periods),
             )
+            partial_meta, fresh_for_latest = self._stamp_ohlcv_freshness(
+                partial_meta,
+                local_partial_df,
+                interval,
+                normalized_end,
+            )
             self._ohlcv_meta[meta_key] = partial_meta
-            return local_partial_df.copy()
+            if fresh_for_latest:
+                return local_partial_df.copy()
 
         self._ohlcv_meta[meta_key] = last_error_meta or self._stamp_metadata(
             {"source": "unavailable", "source_class": "unavailable", "delayed": False}
@@ -1627,13 +1688,22 @@ class DataFetcher:
             logger.debug(f"[DataFetcher] {log_label} quote {asset}: {exc}")
         return None, None
 
-    def _cached_ohlcv_frame(self, cache_key: str, meta_key: str) -> Optional[pd.DataFrame]:
+    def _cached_ohlcv_frame(
+        self,
+        cache_key: str,
+        meta_key: str,
+        interval: str,
+        normalized_end: Optional[pd.Timestamp],
+    ) -> Optional[pd.DataFrame]:
         cached = cache.get(cache_key)
         if not cached:
             return None
         cached_df, cached_meta = cached
         meta = self._stamp_metadata(cached_meta, from_cache=True)
+        meta, fresh_for_latest = self._stamp_ohlcv_freshness(meta, cached_df, interval, normalized_end)
         self._ohlcv_meta[meta_key] = meta
+        if not fresh_for_latest:
+            return None
         self._ping_health("technicals")
         return cached_df.copy()
 
@@ -1725,6 +1795,15 @@ class DataFetcher:
                     delayed=False,
                     realtime=bool((local_meta or {}).get("realtime", False)),
                 )
+                meta, fresh_for_latest = self._stamp_ohlcv_freshness(
+                    meta,
+                    local_df,
+                    interval,
+                    normalized_end,
+                )
+                if not fresh_for_latest:
+                    self._ohlcv_meta[meta_key] = meta
+                    return None, None, meta
                 if self._local_history_satisfies(local_df, periods):
                     if allow_short_circuit:
                         self._store_ohlcv_result(
@@ -1789,6 +1868,14 @@ class DataFetcher:
                     delayed=delayed,
                     realtime=realtime,
                 )
+                meta, fresh_for_latest = self._stamp_ohlcv_freshness(
+                    meta,
+                    df,
+                    interval,
+                    normalized_end,
+                )
+                if not fresh_for_latest:
+                    return None, meta
                 self._store_ohlcv_result(asset, category, interval, meta_key, cache_key, df, meta)
                 return df, None
             if bridge_meta:

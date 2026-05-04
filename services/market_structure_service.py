@@ -98,22 +98,103 @@ def _trusted_micro_pressure(context: Optional[Mapping[str, Any]]) -> Tuple[int, 
     return (1 if pressure > 0.0 else -1), strength, True
 
 
+_COLUMN_SYNONYMS = {
+    "open": ("open", "o", "openPrice", "open_price"),
+    "high": ("high", "h", "highPrice", "high_price"),
+    "low": ("low", "l", "lowPrice", "low_price"),
+    "close": (
+        "close",
+        "c",
+        "last",
+        "price",
+        "mid",
+        "mid_price",
+        "midPrice",
+        "mark",
+        "closePrice",
+        "close_price",
+    ),
+}
+
+
+def _column_lookup(frame: Any) -> Dict[str, Any]:
+    try:
+        raw_columns = getattr(frame, "columns", None)
+        columns = list(raw_columns) if raw_columns is not None else []
+    except Exception:
+        columns = []
+    if not columns and isinstance(frame, Mapping):
+        try:
+            columns = list(frame.keys())
+        except Exception:
+            columns = []
+    lookup: Dict[str, Any] = {}
+    for column in columns:
+        token = str(column or "").strip().lower()
+        if token and token not in lookup:
+            lookup[token] = column
+    return lookup
+
+
+def _find_column(frame: Any, *names: str) -> Optional[Any]:
+    lookup = _column_lookup(frame)
+    for name in names:
+        token = str(name or "").strip().lower()
+        if token in lookup:
+            return lookup[token]
+    return None
+
+
+def _values_for_column(frame: Any, column: Any) -> List[float]:
+    try:
+        series = frame[column]
+    except Exception:
+        return []
+    try:
+        raw_values = series.tail(160).tolist()
+    except Exception:
+        try:
+            raw_values = list(series)[-160:]
+        except Exception:
+            return []
+    values: List[float] = []
+    for value in raw_values:
+        numeric = _safe_float(value, 0.0)
+        if numeric > 0.0:
+            values.append(numeric)
+    return values
+
+
+def _bid_ask_mid_values(frame: Any) -> List[float]:
+    bid_col = _find_column(frame, "bid", "Bid", "bid_price", "bidPrice")
+    ask_col = _find_column(frame, "ask", "Ask", "ask_price", "askPrice")
+    if bid_col is None or ask_col is None:
+        return []
+    bids = _values_for_column(frame, bid_col)
+    asks = _values_for_column(frame, ask_col)
+    if not bids or not asks:
+        return []
+    sample = min(len(bids), len(asks), 160)
+    mids: List[float] = []
+    for bid, ask in zip(bids[-sample:], asks[-sample:]):
+        if bid > 0.0 and ask > 0.0:
+            mids.append((bid + ask) / 2.0)
+    return mids
+
+
 def _column_values(frame: Any, name: str) -> List[float]:
     if frame is None:
         return []
-    candidates = [name, name.lower(), name.upper(), name.capitalize()]
-    try:
-        columns = list(getattr(frame, "columns", []) or [])
-    except Exception:
-        columns = []
-    selected = next((col for col in candidates if col in columns), None)
-    if selected is None:
-        return []
-    try:
-        values = frame[selected].tail(160).tolist()
-    except Exception:
-        return []
-    return [_safe_float(value, 0.0) for value in values if _safe_float(value, 0.0) > 0.0]
+    normalized = str(name or "").strip().lower()
+    candidates = _COLUMN_SYNONYMS.get(normalized, (name,))
+    selected = _find_column(frame, *candidates)
+    if selected is not None:
+        values = _values_for_column(frame, selected)
+        if values:
+            return values
+    if normalized == "close":
+        return _bid_ask_mid_values(frame)
+    return []
 
 
 def _frame_len(frame: Any) -> int:
@@ -344,6 +425,8 @@ class MarketStructureService:
         confirmation_ready = confirmation_count >= confirmation_required
         fast_ready = bool(confirmation_count >= 1 and alignment_score >= 0.32 and target_eff >= 0.16)
         trend_5m = str(details.get("5m", primary).get("trend_state", "unknown"))
+        trigger_item = details.get("5m", primary)
+        trigger_direction = int(_safe_float(trigger_item.get("direction_sign"), 0.0))
         pattern_base = "trending_up" if direction > 0 else "trending_down" if direction < 0 else "ranging"
         if micro_provisional:
             trend_5m = pattern_base
@@ -385,7 +468,7 @@ class MarketStructureService:
             "fast_entry_confirmation_bars_required": 1,
             "fast_entry_confirmation_count": 1 if fast_ready else 0,
             "fast_entry_confirmation_ready": bool(fast_ready),
-            "trigger_trend_aligned": bool(micro_provisional or (direction and _direction_sign(trend_5m) == direction)),
+            "trigger_trend_aligned": bool(micro_provisional or (direction and trigger_direction == direction)),
             "breakout_retest_ready": bool(abs(breakout_score) >= 0.34 and target_eff >= 0.20),
             "first_pullback_ready": bool(abs(pullback_score) >= 0.36 and extension <= 1.05),
             "failed_opposite_move_confirmed": False,
