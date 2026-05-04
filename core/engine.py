@@ -214,6 +214,9 @@ class TradingCore:
         self._last_broker_balance_snapshot: Dict[str, Any] = {}
         self._last_broker_position_reconcile = 0.0
         self._broker_issue_alerts: Dict[str, float] = {}
+        self._started_monotonic = time.monotonic()
+        self._last_execution_monotonic = 0.0
+        self._last_startup_guard_log = 0.0
         self._dashboard_command_listener_started = False
         self._dashboard_command_thread: Optional[threading.Thread] = None
 
@@ -2735,9 +2738,113 @@ class TradingCore:
         max_count = max(1, int(limit or 1))
         return survivors[:max_count]
 
+    @staticmethod
+    def _env_float(name: str, default: float) -> float:
+        try:
+            text = str(os.getenv(name, "")).strip()
+            return float(text) if text else float(default)
+        except Exception:
+            return float(default)
+
+    @staticmethod
+    def _env_int(name: str, default: int) -> int:
+        try:
+            text = str(os.getenv(name, "")).strip()
+            return int(float(text)) if text else int(default)
+        except Exception:
+            return int(default)
+
+    def _broker_startup_execution_block_reason(self) -> str:
+        if not self._broker_balance_enabled():
+            return ""
+        freeze_seconds = max(0.0, self._env_float("BROKER_STARTUP_TRADE_FREEZE_SECONDS", 300.0))
+        if freeze_seconds <= 0:
+            return ""
+        age = time.monotonic() - float(self._started_monotonic or 0.0)
+        if age >= freeze_seconds:
+            return ""
+        remaining = int(round(freeze_seconds - age))
+        return f"startup broker freeze active for {remaining}s"
+
+    def _broker_entry_spacing_block_reason(self) -> str:
+        if not self._broker_balance_enabled():
+            return ""
+        spacing = max(0.0, self._env_float("BROKER_MIN_SECONDS_BETWEEN_ENTRIES", 300.0))
+        if spacing <= 0 or self._last_execution_monotonic <= 0:
+            return ""
+        elapsed = time.monotonic() - float(self._last_execution_monotonic)
+        if elapsed >= spacing:
+            return ""
+        return f"broker entry spacing active for {int(round(spacing - elapsed))}s"
+
+    def _broker_execution_quality_block_reason(self, signal: Signal) -> str:
+        if not self._broker_balance_enabled():
+            return ""
+        metadata = signal.metadata if isinstance(signal.metadata, dict) else {}
+        confidence = float(signal.confidence or 0.0)
+        opportunity = float(metadata.get("opportunity_score", 0.0) or 0.0)
+        setup = float(metadata.get("setup_quality", metadata.get("playbook_setup_quality", 0.0)) or 0.0)
+        alignment = float(metadata.get("alignment_score", metadata.get("playbook_alignment_score", 0.0)) or 0.0)
+        conflicts = int(metadata.get("playbook_conflict_components", 0) or 0)
+
+        min_confidence = self._env_float("BROKER_MIN_EXECUTION_CONFIDENCE", 0.64)
+        min_opportunity = self._env_float("BROKER_MIN_EXECUTION_OPPORTUNITY_SCORE", 0.66)
+        min_setup = self._env_float("BROKER_MIN_EXECUTION_SETUP_QUALITY", 0.50)
+        min_alignment = self._env_float("BROKER_MIN_EXECUTION_ALIGNMENT", 0.50)
+        max_conflicts = self._env_int("BROKER_MAX_EXECUTION_CONFLICTS", 0)
+
+        if confidence < min_confidence:
+            return f"confidence {confidence:.3f} below broker floor {min_confidence:.3f}"
+        if opportunity < min_opportunity:
+            return f"opportunity {opportunity:.3f} below broker floor {min_opportunity:.3f}"
+        if setup < min_setup:
+            return f"setup {setup:.3f} below broker floor {min_setup:.3f}"
+        if alignment < min_alignment:
+            return f"alignment {alignment:.3f} below broker floor {min_alignment:.3f}"
+        if conflicts > max_conflicts:
+            return f"conflicts {conflicts} above broker max {max_conflicts}"
+        return ""
+
+    def _filter_broker_execution_quality(self, survivors: List[Signal]) -> List[Signal]:
+        if not self._broker_balance_enabled():
+            return survivors
+        filtered: List[Signal] = []
+        for sig in survivors:
+            reason = self._broker_execution_quality_block_reason(sig)
+            if reason:
+                logger.warning(f"[TradingCore] Broker quality gate blocked {sig.asset}: {reason}")
+                continue
+            filtered.append(sig)
+        return filtered
+
+    def _broker_cycle_execution_limit(self, requested_limit: int) -> int:
+        if not self._broker_balance_enabled():
+            return max(1, int(requested_limit or 1))
+        configured = self._env_int("BROKER_MAX_NEW_TRADES_PER_CYCLE", 1)
+        return max(1, min(max(1, int(requested_limit or 1)), configured))
+
     def _execute_ranked_survivors(self, survivors: List[Signal], limit: int = 3) -> int:
-        selected_survivors = self._filter_broker_supported_survivors(
-            self._select_execution_survivors(survivors, limit=limit)
+        startup_reason = self._broker_startup_execution_block_reason()
+        if startup_reason:
+            now = time.monotonic()
+            if now - float(self._last_startup_guard_log or 0.0) >= 30.0:
+                self._last_startup_guard_log = now
+                logger.warning(f"[TradingCore] Broker execution paused: {startup_reason}")
+            return 0
+
+        spacing_reason = self._broker_entry_spacing_block_reason()
+        if spacing_reason:
+            logger.info(f"[TradingCore] Broker execution paused: {spacing_reason}")
+            return 0
+
+        quality_pool = self._filter_broker_execution_quality(survivors)
+        if self._broker_balance_enabled():
+            support_pool_limit = max(1, self._env_int("BROKER_SUPPORT_CHECK_POOL_LIMIT", 8))
+            quality_pool = quality_pool[:support_pool_limit]
+        executable_pool = self._filter_broker_supported_survivors(quality_pool)
+        selected_survivors = self._select_execution_survivors(
+            executable_pool,
+            limit=self._broker_cycle_execution_limit(limit),
         )
         if selected_survivors:
             selection_summary = ", ".join(
@@ -2759,6 +2866,7 @@ class TradingCore:
                 continue
             if self._execute_signal(sig):
                 processed += 1
+                self._last_execution_monotonic = time.monotonic()
         return processed
 
     def _trading_cycle(self) -> None:
@@ -3145,13 +3253,44 @@ class TradingCore:
 
     def _within_position_caps(self, signal: Signal) -> bool:
         from config.config import MAX_POSITIONS
-        if self.state.open_position_count() >= MAX_POSITIONS:
+        open_positions = list(self.state.get_open_positions() or [])
+        open_position_count = len(open_positions)
+        if self._broker_balance_enabled():
+            broker_max_open = self._env_int("BROKER_MAX_OPEN_POSITIONS", 3)
+            broker_max_per_category = self._env_int("BROKER_MAX_OPEN_POSITIONS_PER_CATEGORY", 1)
+            broker_max_same_direction = self._env_int("BROKER_MAX_SAME_DIRECTION_POSITIONS", 2)
+            if open_position_count >= max(1, broker_max_open):
+                logger.warning(
+                    f"[TradingCore] Broker cap blocked {signal.asset}: "
+                    f"{open_position_count} open positions >= broker cap {broker_max_open}"
+                )
+                return False
+            cat_open = sum(1 for p in open_positions if str(p.get("category") or "") == str(signal.category or ""))
+            if cat_open >= max(1, broker_max_per_category):
+                logger.warning(
+                    f"[TradingCore] Broker category cap blocked {signal.asset}: "
+                    f"{cat_open} open {signal.category} positions >= broker category cap {broker_max_per_category}"
+                )
+                return False
+            direction = str(signal.direction or "").upper()
+            same_direction_open = sum(
+                1 for p in open_positions
+                if str(p.get("direction") or p.get("signal") or "").upper() == direction
+            )
+            if same_direction_open >= max(1, broker_max_same_direction):
+                logger.warning(
+                    f"[TradingCore] Broker direction cap blocked {signal.asset}: "
+                    f"{same_direction_open} open {direction} positions >= broker direction cap {broker_max_same_direction}"
+                )
+                return False
+
+        if open_position_count >= MAX_POSITIONS:
             return False
 
         from config.config import CATEGORY_CAPS, CATEGORY_CAP_SOFT_BUFFER
         cat = signal.category
         cat_open = sum(
-            1 for p in self.state.get_open_positions()
+            1 for p in open_positions
             if p.get("category") == cat
         )
         soft_cap = CATEGORY_CAPS.get(cat, 99)

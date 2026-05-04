@@ -139,7 +139,19 @@ def _ig_actual_cash_per_price_unit_per_size(position: Dict[str, Any], asset: str
     broker_execution = _nested_dict(metadata, "broker_execution")
     broker_sizing = _nested_dict(broker_execution, "broker_sizing")
     value = _coerce_float(broker_sizing.get("broker_cash_per_price_unit_per_size"))
-    return value if value > 0 else 0.0
+    if value > 0:
+        return value
+    try:
+        from risk.position_sizer import PositionSizer as _PS
+
+        category = str(position.get("category") or "forex")
+        spec = _PS.get_spec(asset or canonical, category)
+        contract = _coerce_float(spec.get("contract"))
+        if contract <= 0:
+            return 0.0
+        return float(_PS.cash_per_price_unit(asset or canonical, category, contract))
+    except Exception:
+        return 0.0
 
 
 def _compute_ig_broker_pnl(

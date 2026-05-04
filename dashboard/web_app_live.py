@@ -5259,6 +5259,7 @@ def _build_command_center_pnl_curve(
                 "entry_price": float(pos.get("entry_price", 0) or 0),
                 "position_size": float(pos.get("position_size", 0) or 0),
                 "open_time": entry_dt.astimezone(tz) if entry_dt else None,
+                "raw_position": dict(pos),
             }
         )
 
@@ -5268,6 +5269,18 @@ def _build_command_center_pnl_curve(
         price = _price_at(pos["asset"], bucket.timestamp())
         if price is None or not pos["entry_price"] or not pos["position_size"]:
             return 0.0
+        raw_position = pos.get("raw_position") if isinstance(pos.get("raw_position"), dict) else {}
+        if raw_position:
+            try:
+                quote = resolve_live_position_snapshot(
+                    raw_position,
+                    live_snapshot={"price": price, "source": "pnl_curve", "age_seconds": 0.0},
+                    live_snapshot_max_age_seconds=999999.0,
+                    provider_fallback=None,
+                )
+                return float(quote.get("pnl", 0.0) or 0.0)
+            except Exception:
+                pass
         try:
             from risk.position_sizer import PositionSizer as _PS
 
