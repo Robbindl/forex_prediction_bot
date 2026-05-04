@@ -28,7 +28,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from core.assets  import registry
 from data.fetcher import DataFetcher, get_shared_fetcher
-from services.live_position_pricing import resolve_live_position_snapshot
+from services.live_position_pricing import normalize_position_price, normalize_position_prices, resolve_live_position_snapshot
 from utils.logger import get_logger
 from utils.api_errors import (
     APIError, BadRequest, Unauthorized, Forbidden, NotFound, InternalError,
@@ -4698,6 +4698,7 @@ def _build_command_center_enriched_positions(
 ) -> List[Dict[str, Any]]:
     enriched_positions: List[Dict[str, Any]] = []
     for position in list(positions or []):
+        position = normalize_position_prices(position)
         asset = str(position.get("asset", "") or "")
         quote = resolve_live_position_snapshot(
             position,
@@ -4734,6 +4735,8 @@ def _build_command_center_enriched_positions(
             "stop_loss": float(position.get("stop_loss", 0) or 0),
             "take_profit": float(position.get("take_profit", 0) or 0),
             "take_profit_levels": list(position.get("take_profit_levels", []) or []),
+            "broker_stop_loss": float(position.get("broker_stop_loss", 0) or 0),
+            "broker_take_profit": float(position.get("broker_take_profit", 0) or 0),
             "tp_hit": int(position.get("tp_hit", 0) or 0),
             "pnl": round(live_pnl, 2),
             "position_size": position_size,
@@ -4768,6 +4771,8 @@ def _build_command_center_signals(enriched_positions: Any) -> List[Dict[str, Any
             "current_price": float(position.get("current_price", 0) or 0),
             "stop_loss": float(position.get("stop_loss", 0) or 0),
             "take_profit": float(position.get("take_profit", 0) or 0),
+            "broker_stop_loss": float(position.get("broker_stop_loss", 0) or 0),
+            "broker_take_profit": float(position.get("broker_take_profit", 0) or 0),
             "category": position.get("category", ""),
             "strategy_id": position.get("strategy_id", ""),
             "pnl": float(position.get("pnl", 0) or 0),
@@ -5086,6 +5091,7 @@ def _build_live_book_payload() -> Dict[str, Any]:
     enriched_positions: List[Dict[str, Any]] = []
     stale_assets: List[str] = []
     for position in position_rows:
+        position = normalize_position_prices(position)
         asset = str(position.get("asset", "") or "")
         quote = resolve_live_position_snapshot(
             position,
@@ -5163,7 +5169,7 @@ def _build_command_center_pnl_curve(
         local_candle_store = None
 
     history_map: Dict[str, Dict[str, List[float]]] = {}
-    position_rows = [pos for pos in list(positions or []) if isinstance(pos, dict)]
+    position_rows = [normalize_position_prices(pos) for pos in list(positions or []) if isinstance(pos, dict)]
     for pos in position_rows:
         asset = str(pos.get("asset") or "")
         category = str(pos.get("category") or "forex")
@@ -5196,7 +5202,7 @@ def _build_command_center_pnl_curve(
                                     ts = float(idx.timestamp())
                             except Exception:
                                 ts = 0.0
-                            price = float(row.get("close", 0.0) or 0.0)
+                            price = normalize_position_price(pos, row.get("close", 0.0))
                             if ts > 0 and price > 0:
                                 history_points.append((ts, price))
             except Exception:
@@ -5206,7 +5212,7 @@ def _build_command_center_pnl_curve(
             try:
                 for item in get_live_price_history(asset, limit=2000) or []:
                     ts = float(item.get("timestamp", 0.0) or 0.0)
-                    price = float(item.get("price", 0.0) or 0.0)
+                    price = normalize_position_price(pos, item.get("price", 0.0))
                     if ts > 0 and price > 0:
                         history_points.append((ts, price))
             except Exception:
@@ -5672,6 +5678,7 @@ def _live_signal_payload(
 
 
 def _live_signal_payload_from_position(pos: Dict[str, Any], filt: str) -> Optional[Dict[str, Any]]:
+    pos = normalize_position_prices(pos)
     asset = str(pos.get("asset", "") or "")
     category = str(pos.get("category", "forex") or "forex")
     direction = str(pos.get("direction") or pos.get("signal", "BUY")).upper()
@@ -5690,6 +5697,8 @@ def _live_signal_payload_from_position(pos: Dict[str, Any], filt: str) -> Option
         "sl": stop_loss,
         "take_profit": take_profit,
         "tp": take_profit,
+        "broker_stop_loss": float(pos.get("broker_stop_loss", 0) or 0),
+        "broker_take_profit": float(pos.get("broker_take_profit", 0) or 0),
         "risk_reward": risk_reward,
         "rr": risk_reward,
         "position_size": float(pos.get("position_size", 0)),

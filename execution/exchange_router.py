@@ -144,6 +144,44 @@ class ExchangeRouter:
             logger.error(f"[Router] Close failed for {asset}: {exc}")
             return OrderResult(order_id="", status="FAILED", error=str(exc))
 
+    def partial_close_position(
+        self,
+        position: dict,
+        *,
+        local_close_size: float,
+        reason: str = "Partial Close",
+    ) -> Optional[OrderResult]:
+        category = str(position.get("category") or "forex")
+        asset = str(position.get("asset") or "")
+        broker_name = str(position.get("broker") or "").lower()
+        adapter = self._adapters.get(broker_name) if broker_name else None
+        if adapter is None:
+            adapter = self._get_adapter(category, asset=asset)
+        if adapter is None:
+            logger.error(f"[Router] No partial-close adapter for {asset or category}")
+            return None
+        close_fn = getattr(adapter, "partial_close_position", None)
+        if not callable(close_fn):
+            return OrderResult(order_id="", status="FAILED", error=f"{adapter.name} does not support partial broker close")
+        try:
+            return close_fn(position, local_close_size=local_close_size, reason=reason)
+        except Exception as exc:
+            logger.error(f"[Router] Partial close failed for {asset}: {exc}")
+            return OrderResult(order_id="", status="FAILED", error=str(exc))
+
+    def list_open_positions(self, broker_name: str) -> list[dict]:
+        adapter = self._adapters.get(str(broker_name or "").lower())
+        if adapter is None:
+            return []
+        list_fn = getattr(adapter, "list_open_positions", None)
+        if not callable(list_fn):
+            return []
+        try:
+            return list(list_fn() or [])
+        except Exception as exc:
+            logger.warning(f"[Router] Broker position list failed for {broker_name}: {exc}")
+            raise
+
     def check_support(self, signal: dict) -> tuple[bool, str]:
         category = str(signal.get("category") or "crypto")
         asset = str(signal.get("asset") or signal.get("symbol") or "")
@@ -215,6 +253,8 @@ class ExchangeRouter:
             "contract spec missing",
             "attached_order_level_error",
             "attached order rejected locally",
+            "attached stop missing",
+            "attached limit missing",
             "requested stop distance too wide",
             "broker minimum stop distance too wide",
         ]

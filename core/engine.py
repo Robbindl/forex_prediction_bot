@@ -212,6 +212,7 @@ class TradingCore:
         self._last_ranked_at_utc: str = ""
         self._last_broker_balance_sync = 0.0
         self._last_broker_balance_snapshot: Dict[str, Any] = {}
+        self._last_broker_position_reconcile = 0.0
         self._broker_issue_alerts: Dict[str, float] = {}
         self._dashboard_command_listener_started = False
         self._dashboard_command_thread: Optional[threading.Thread] = None
@@ -780,7 +781,11 @@ class TradingCore:
         partial_trade: Dict[str, Any],
         pnl: float,
     ) -> None:
-        if self._paper_trader and callable(getattr(self._paper_trader, "on_trade_closed", None)):
+        if (
+            not self._is_broker_managed_position(parent_snapshot)
+            and self._paper_trader
+            and callable(getattr(self._paper_trader, "on_trade_closed", None))
+        ):
             self._paper_trader.on_trade_closed(partial_trade)
             return
 
@@ -1797,6 +1802,209 @@ class TradingCore:
         except Exception:
             return numeric
 
+    @staticmethod
+    def _normalize_broker_position_prices(pos: Dict[str, Any]) -> Dict[str, Any]:
+        try:
+            from services.live_position_pricing import normalize_position_prices
+
+            return normalize_position_prices(pos)
+        except Exception:
+            return dict(pos or {})
+
+    def _repair_broker_position_price_scales(self) -> int:
+        repaired = 0
+        for pos in list(self.state.get_open_positions() or []):
+            if not self._is_broker_managed_position(pos):
+                continue
+            normalized = self._normalize_broker_position_prices(pos)
+            if normalized == pos:
+                continue
+            self.state.sync_open_position(normalized)
+            repaired += 1
+        if repaired:
+            logger.warning(f"[TradingCore] Normalized {repaired} broker position(s) to strategy price scale")
+            self._publish_positions_snapshot()
+        return repaired
+
+    @staticmethod
+    def _broker_reconcile_interval_seconds() -> float:
+        try:
+            return max(15.0, float(os.getenv("IG_POSITION_RECONCILE_INTERVAL_SEC", "60") or 60.0))
+        except Exception:
+            return 60.0
+
+    @staticmethod
+    def _broker_missing_grace_seconds() -> float:
+        try:
+            return max(0.0, float(os.getenv("IG_POSITION_MISSING_GRACE_SEC", "180") or 180.0))
+        except Exception:
+            return 180.0
+
+    @staticmethod
+    def _float_or_zero(value: Any) -> float:
+        try:
+            return float(value or 0.0)
+        except Exception:
+            return 0.0
+
+    @staticmethod
+    def _position_age_seconds(pos: Dict[str, Any]) -> float:
+        raw = str(pos.get("open_time") or pos.get("entry_time") or "").strip()
+        if not raw:
+            return 999999.0
+        try:
+            dt = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+            if dt.tzinfo is None:
+                dt = dt.replace(tzinfo=timezone.utc)
+            return max(0.0, (datetime.now(timezone.utc) - dt.astimezone(timezone.utc)).total_seconds())
+        except Exception:
+            return 999999.0
+
+    def _extract_ig_position_snapshot(self, local_pos: Dict[str, Any], raw_item: Dict[str, Any]) -> Dict[str, Any]:
+        snapshot = self._normalize_broker_position_prices(local_pos)
+        broker_pos = raw_item.get("position") if isinstance(raw_item.get("position"), dict) else {}
+        market = raw_item.get("market") if isinstance(raw_item.get("market"), dict) else {}
+        asset = str(snapshot.get("asset") or snapshot.get("canonical_asset") or "")
+        direction = str(broker_pos.get("direction") or snapshot.get("direction") or snapshot.get("signal") or "BUY").upper()
+
+        level_raw = self._float_or_zero(broker_pos.get("level"))
+        stop_raw = self._float_or_zero(broker_pos.get("stopLevel"))
+        limit_raw = self._float_or_zero(broker_pos.get("limitLevel"))
+        bid_raw = self._float_or_zero(market.get("bid"))
+        offer_raw = self._float_or_zero(market.get("offer"))
+        current_raw = bid_raw if direction == "BUY" else offer_raw
+        if current_raw <= 0 and bid_raw > 0 and offer_raw > 0:
+            current_raw = (bid_raw + offer_raw) / 2.0
+        if current_raw <= 0:
+            current_raw = bid_raw or offer_raw
+
+        if level_raw > 0:
+            broker_entry = self._normalize_position_price(snapshot, level_raw)
+            snapshot["entry_price"] = broker_entry
+            snapshot["broker_entry_price"] = broker_entry
+            snapshot["requested_entry_price"] = self._normalize_position_price(snapshot, snapshot.get("requested_entry_price", level_raw))
+        if current_raw > 0:
+            snapshot["current_price"] = self._normalize_position_price(snapshot, current_raw)
+        if stop_raw > 0:
+            snapshot["broker_stop_loss"] = self._normalize_position_price(snapshot, stop_raw)
+        if limit_raw > 0:
+            snapshot["broker_take_profit"] = self._normalize_position_price(snapshot, limit_raw)
+
+        size = self._float_or_zero(broker_pos.get("size"))
+        if size > 0:
+            snapshot["broker_position_size"] = size
+        deal_id = str(broker_pos.get("dealId") or snapshot.get("broker_trade_id") or snapshot.get("trade_id") or "")
+        if deal_id:
+            snapshot["broker_trade_id"] = deal_id
+        deal_reference = str(broker_pos.get("dealReference") or snapshot.get("broker_deal_reference") or "")
+        if deal_reference:
+            snapshot["broker_deal_reference"] = deal_reference
+        epic = str(market.get("epic") or snapshot.get("broker_symbol") or "")
+        if epic:
+            snapshot["broker_symbol"] = epic
+        snapshot["direction"] = direction
+        snapshot["signal"] = direction
+
+        metadata = dict(snapshot.get("metadata") or {})
+        metadata["broker_reconciliation"] = {
+            "source": "ig_positions",
+            "synced_at": datetime.now(timezone.utc).isoformat(),
+            "raw_level": level_raw,
+            "raw_stop_level": stop_raw,
+            "raw_limit_level": limit_raw,
+            "raw_bid": bid_raw,
+            "raw_offer": offer_raw,
+            "broker_stop_loss": snapshot.get("broker_stop_loss"),
+            "broker_take_profit": snapshot.get("broker_take_profit"),
+        }
+        snapshot["metadata"] = metadata
+        return self._normalize_broker_position_prices(snapshot)
+
+    def _close_local_broker_position_missing_on_ig(self, pos: Dict[str, Any]) -> bool:
+        trade_id = str(pos.get("trade_id") or "").strip()
+        if not trade_id:
+            return False
+        current = self._normalize_position_price(pos, pos.get("current_price") or pos.get("entry_price") or 0.0)
+        entry = self._normalize_position_price(pos, pos.get("entry_price") or current)
+        direction = str(pos.get("direction") or pos.get("signal") or "BUY").upper()
+        size = self._float_or_zero(pos.get("position_size"))
+        pnl = self._manual_close_pnl(pos, entry, current, size, direction)
+        metadata = dict(pos.get("metadata") or {})
+        metadata["broker_reconciliation_close"] = {
+            "source": "ig_positions",
+            "closed_at": datetime.now(timezone.utc).isoformat(),
+            "reason": "position no longer appears in IG open positions",
+        }
+        closed = self.state.close_position(
+            trade_id,
+            current,
+            "Broker reconciliation: position no longer open on IG",
+            pnl,
+            extra_updates={"metadata": metadata},
+        )
+        if not closed:
+            return False
+        self._record_trade_close_side_effects(closed, pnl)
+        self._set_post_close_cooldown(str(closed.get("asset", "") or ""), closed)
+        logger.warning(f"[TradingCore] Closed local broker position {trade_id}: no longer open on IG")
+        return True
+
+    def _reconcile_broker_positions(self, *, force: bool = False) -> None:
+        if not self._broker_balance_enabled():
+            return
+        router = getattr(self, "exchange_router", None)
+        if router is None or not hasattr(router, "list_open_positions"):
+            return
+        now = time.monotonic()
+        if not force and now - float(self._last_broker_position_reconcile or 0.0) < self._broker_reconcile_interval_seconds():
+            return
+        self._last_broker_position_reconcile = now
+        try:
+            raw_positions = router.list_open_positions("ig")
+        except Exception as exc:
+            self._notify_broker_issue(
+                "BROKER",
+                "broker",
+                str(exc),
+                stage="broker position reconciliation",
+                action="IG positions were not reconciled; local state left unchanged",
+            )
+            return
+
+        by_deal_id: Dict[str, Dict[str, Any]] = {}
+        for item in list(raw_positions or []):
+            if not isinstance(item, dict):
+                continue
+            broker_pos = item.get("position") if isinstance(item.get("position"), dict) else {}
+            deal_id = str(broker_pos.get("dealId") or "").strip()
+            if deal_id:
+                by_deal_id[deal_id] = item
+
+        synced = 0
+        closed_missing = 0
+        for pos in list(self.state.get_open_positions() or []):
+            if not self._is_broker_managed_position(pos):
+                continue
+            deal_id = str(pos.get("broker_trade_id") or pos.get("trade_id") or "").strip()
+            raw_item = by_deal_id.get(deal_id)
+            if raw_item:
+                snapshot = self._extract_ig_position_snapshot(pos, raw_item)
+                if snapshot != pos:
+                    self.state.sync_open_position(snapshot)
+                    synced += 1
+                continue
+            if self._position_age_seconds(pos) < self._broker_missing_grace_seconds():
+                continue
+            if self._close_local_broker_position_missing_on_ig(pos):
+                closed_missing += 1
+
+        if synced or closed_missing:
+            logger.info(
+                f"[TradingCore] IG reconciliation synced={synced} "
+                f"closed_missing={closed_missing}"
+            )
+            self._publish_positions_snapshot()
+
     def _restore_paper_trader_positions(self) -> None:
         if self._paper_trader is None:
             return
@@ -1973,6 +2181,8 @@ class TradingCore:
                 or broker_close.get("deal_status")
                 or ""
             ),
+            "broker_stop_loss": TradingCore._normalize_position_price(position, position.get("broker_stop_loss", 0.0)),
+            "broker_take_profit": TradingCore._normalize_position_price(position, position.get("broker_take_profit", 0.0)),
         }
 
     def _dashboard_close_position_command(self, payload: Dict[str, Any]) -> Dict[str, Any]:
@@ -2144,6 +2354,200 @@ class TradingCore:
         return time.monotonic() - cycle_start
 
     @staticmethod
+    def _direction_level_hit(direction: str, current_price: float, level: float, *, kind: str) -> bool:
+        if current_price <= 0 or level <= 0:
+            return False
+        side = str(direction or "BUY").upper()
+        if kind == "stop":
+            return current_price <= level if side == "BUY" else current_price >= level
+        return current_price >= level if side == "BUY" else current_price <= level
+
+    @staticmethod
+    def _exit_level_on_correct_side(direction: str, entry_price: float, level: float, *, kind: str) -> bool:
+        if entry_price <= 0 or level <= 0:
+            return False
+        side = str(direction or "BUY").upper()
+        if kind == "stop":
+            return level < entry_price if side == "BUY" else level > entry_price
+        return level > entry_price if side == "BUY" else level < entry_price
+
+    def _broker_position_live_price(self, pos: Dict[str, Any], prices: Dict[str, float]) -> float:
+        asset = str(pos.get("asset") or "")
+        raw = prices.get(asset)
+        if raw in (None, 0, 0.0):
+            raw = pos.get("current_price") or pos.get("entry_price")
+        return self._normalize_position_price(pos, raw)
+
+    def _broker_position_take_profit_levels(self, pos: Dict[str, Any]) -> List[float]:
+        normalized = self._normalize_broker_position_prices(pos)
+        direction = str(normalized.get("direction") or normalized.get("signal") or "BUY").upper()
+        entry = self._normalize_position_price(normalized, normalized.get("entry_price"))
+        levels: List[float] = []
+        for raw in list(normalized.get("take_profit_levels") or []):
+            level = self._float_or_zero(raw)
+            if self._exit_level_on_correct_side(direction, entry, level, kind="take_profit"):
+                levels.append(round(level, 10))
+        if not levels:
+            take_profit = self._float_or_zero(normalized.get("take_profit"))
+            if self._exit_level_on_correct_side(direction, entry, take_profit, kind="take_profit"):
+                levels.append(round(take_profit, 10))
+        return levels
+
+    def _record_broker_partial_take_profit(
+        self,
+        *,
+        pos: Dict[str, Any],
+        tp_idx: int,
+        tp_level: float,
+        total_tiers: int,
+        partial_size: float,
+        broker_result: Any,
+    ) -> None:
+        trade_id = str(pos.get("trade_id") or "")
+        entry = self._normalize_position_price(pos, pos.get("entry_price"))
+        direction = str(pos.get("direction") or pos.get("signal") or "BUY").upper()
+        exit_price = float(getattr(broker_result, "avg_price", 0.0) or 0.0) or tp_level
+        partial_size = float(getattr(broker_result, "filled_qty", 0.0) or partial_size)
+        partial_pnl = self._calculate_position_pnl(
+            str(pos.get("asset") or ""),
+            str(pos.get("category") or "forex"),
+            entry,
+            exit_price,
+            partial_size,
+            direction,
+        )
+        original_size = self._float_or_zero(pos.get("position_size"))
+        remaining_size = max(0.0, original_size - partial_size)
+        raw = getattr(broker_result, "raw", None) if broker_result is not None else None
+        broker_close_size = self._float_or_zero(raw.get("broker_close_size")) if isinstance(raw, dict) else 0.0
+        broker_remaining_size = max(0.0, self._float_or_zero(pos.get("broker_position_size")) - broker_close_size)
+
+        metadata = dict(pos.get("metadata") or {})
+        broker_tp_note = {
+            "tp_index": int(tp_idx + 1),
+            "total_tiers": int(total_tiers),
+            "target_level": round(float(tp_level), 10),
+            "exit_price": round(float(exit_price), 10),
+            "local_close_size": round(float(partial_size), 8),
+            "broker_close_size": round(float(broker_close_size), 8),
+            "closed_at": datetime.now(timezone.utc).isoformat(),
+            "source": "ig_active_management",
+        }
+        events = metadata.get("broker_tp_events") if isinstance(metadata.get("broker_tp_events"), list) else []
+        metadata["broker_tp_events"] = list(events)[-10:] + [broker_tp_note]
+        metadata["last_broker_tp_event"] = broker_tp_note
+
+        parent_snapshot = dict(pos)
+        parent_snapshot["position_size"] = round(remaining_size, 8)
+        parent_snapshot["broker_position_size"] = round(broker_remaining_size, 8)
+        parent_snapshot["tp_hit"] = int(tp_idx + 1)
+        parent_snapshot["current_price"] = round(float(exit_price), 10)
+        parent_snapshot["pnl"] = 0.0
+        parent_snapshot["management_checkpoint_at"] = datetime.now(timezone.utc).isoformat()
+        parent_snapshot["metadata"] = metadata
+
+        partial_trade = {
+            **dict(pos),
+            "trade_id": f"{trade_id}-IGTP{tp_idx + 1}-{int(time.time() * 1000) % 1000000}",
+            "parent_trade_id": trade_id,
+            "is_partial_close": True,
+            "position_size": partial_size,
+            "exit_price": round(float(exit_price), 10),
+            "exit_reason": f"IG Managed Partial TP {tp_idx + 1}/{total_tiers}",
+            "pnl": round(partial_pnl, 6),
+            "exit_time": datetime.now(timezone.utc).isoformat(),
+            "metadata": metadata,
+        }
+
+        self.state.sync_open_position(parent_snapshot)
+        self._record_partial_reduction(parent_snapshot, partial_trade, partial_pnl)
+        self._publish_positions_snapshot()
+        logger.info(
+            f"[TradingCore] IG partial TP {tp_idx + 1}/{total_tiers} "
+            f"{pos.get('asset')} size={partial_size:.6f} pnl={partial_pnl:.2f}"
+        )
+
+    def _manage_broker_position_exits(self, prices: Dict[str, float]) -> None:
+        router = getattr(self, "exchange_router", None)
+        if router is None:
+            return
+        for raw_pos in list(self.state.get_open_positions() or []):
+            if not self._is_broker_managed_position(raw_pos):
+                continue
+            pos = self._normalize_broker_position_prices(raw_pos)
+            trade_id = str(pos.get("trade_id") or "")
+            asset = str(pos.get("asset") or "")
+            category = str(pos.get("category") or "forex")
+            direction = str(pos.get("direction") or pos.get("signal") or "BUY").upper()
+            current_price = self._broker_position_live_price(pos, prices)
+            if not trade_id or current_price <= 0:
+                continue
+
+            entry_price = self._normalize_position_price(pos, pos.get("entry_price"))
+            stop_loss = self._float_or_zero(pos.get("stop_loss"))
+            if (
+                self._exit_level_on_correct_side(direction, entry_price, stop_loss, kind="stop")
+                and self._direction_level_hit(direction, current_price, stop_loss, kind="stop")
+            ):
+                logger.warning(f"[TradingCore] IG managed stop hit {asset} @ {current_price:.6f}")
+                self.close_position_manually(trade_id, reason="IG Managed Stop Loss")
+                continue
+
+            tp_levels = self._broker_position_take_profit_levels(pos)
+            if not tp_levels:
+                continue
+            tp_idx = max(0, int(pos.get("tp_hit", 0) or 0))
+            if tp_idx >= len(tp_levels):
+                continue
+            tp_level = float(tp_levels[tp_idx])
+            if not self._direction_level_hit(direction, current_price, tp_level, kind="take_profit"):
+                continue
+
+            if tp_idx >= len(tp_levels) - 1:
+                logger.info(f"[TradingCore] IG managed final TP hit {asset} @ {current_price:.6f}")
+                self.close_position_manually(trade_id, reason=f"IG Managed Take Profit {tp_idx + 1}/{len(tp_levels)}")
+                continue
+
+            metadata = dict(pos.get("metadata") or {})
+            management = metadata.get("trade_management_plan") if isinstance(metadata.get("trade_management_plan"), dict) else {}
+            fractions = self._normalize_tp_size_fractions(
+                management.get("partial_take_profit_size_fractions"),
+                len(tp_levels),
+            )
+            initial_size = self._float_or_zero(pos.get("initial_position_size")) or self._float_or_zero(pos.get("position_size"))
+            current_size = self._float_or_zero(pos.get("position_size"))
+            target_fraction = float(fractions[tp_idx]) if tp_idx < len(fractions) else 1.0 / max(1, len(tp_levels))
+            partial_size = min(current_size, max(0.0, initial_size * target_fraction))
+            if partial_size <= 0 or partial_size >= current_size:
+                self.close_position_manually(trade_id, reason=f"IG Managed Take Profit {tp_idx + 1}/{len(tp_levels)}")
+                continue
+
+            result = router.partial_close_position(
+                pos,
+                local_close_size=partial_size,
+                reason=f"IG Managed Partial TP {tp_idx + 1}/{len(tp_levels)}",
+            )
+            if result and result.status == "FILLED":
+                self._record_broker_partial_take_profit(
+                    pos=pos,
+                    tp_idx=tp_idx,
+                    tp_level=tp_level,
+                    total_tiers=len(tp_levels),
+                    partial_size=partial_size,
+                    broker_result=result,
+                )
+                continue
+            reason = getattr(result, "error", "no result") if result is not None else "no result"
+            logger.warning(f"[TradingCore] IG partial TP failed {asset}: {reason}")
+            self._notify_broker_issue(
+                asset,
+                category,
+                str(reason),
+                stage="broker partial take profit",
+                action="partial TP was not closed; position remains open and will be retried",
+            )
+
+    @staticmethod
     def _market_hours_status(asset: str, category: str) -> Tuple[bool, str]:
         try:
             from services.market_data_router import get_market_status
@@ -2170,6 +2574,8 @@ class TradingCore:
             # ──────────────────────────────────────────────────────────────────
 
             self._clear_paper_positions_in_broker_mode()
+            self._repair_broker_position_price_scales()
+            self._reconcile_broker_positions(force=True)
             self._restore_paper_trader_positions()
 
             # ── Offline gap-fill check ────────────────────────────────────────
@@ -2219,6 +2625,9 @@ class TradingCore:
             return
         try:
             prices = self._get_prices()
+            self._repair_broker_position_price_scales()
+            self._reconcile_broker_positions()
+            self._manage_broker_position_exits(prices)
             self._paper_trader.update_positions(prices)
             try:
                 from redis_broker import broker as _redis_broker
@@ -5290,7 +5699,7 @@ class TradingCore:
             ("permission_denied", ("broker_permission_denied", "unauthorised", "unauthorized", "no access")),
             ("missing_epic", ("epic not found", "epic not configured")),
             ("missing_contract_spec", ("contract spec missing",)),
-            ("size_rejected", ("below_broker_min_size", "size rejected")),
+            ("size_rejected", ("below_broker_min_size", "broker_partial_below_min_size", "size rejected")),
             ("attached_order_error", ("attached_order_level_error",)),
             ("temporary_unavailable", ("broker_temporarily_unavailable", "temporarily unavailable")),
             ("confirm_pending", ("ig_confirm_pending", "confirm pending", "_confirm_pending")),

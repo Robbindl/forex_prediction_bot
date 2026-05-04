@@ -433,11 +433,26 @@ class IGAdapter(ExchangeAdapter):
         def attach(kind: str, requested_level: Any) -> None:
             level = _safe_float(normalize_ig_market_price(asset, requested_level), 0.0)
             if level <= 0:
+                meta[kind] = {
+                    "requested_level": requested_level,
+                    "status": "missing_level",
+                }
                 return
             valid_side = (
                 (kind == "stop" and ((side == "BUY" and level < reference) or (side == "SELL" and level > reference)))
                 or (kind == "limit" and ((side == "BUY" and level > reference) or (side == "SELL" and level < reference)))
             )
+            if not valid_side:
+                meta[kind] = {
+                    "requested_level": level,
+                    "reference_price": round(reference, 10),
+                    "status": "rejected_invalid_side",
+                }
+                meta["fatal_error"] = (
+                    f"{kind} is on the wrong side for {asset} {side}: "
+                    f"level={level:.10f} reference={reference:.10f}"
+                )
+                return
             raw_points = abs(reference - level) / point_size if valid_side else 0.0
             if kind == "stop" and valid_side:
                 max_stop_distance = abs(reference) * _max_stop_distance_pct(category)
@@ -496,7 +511,11 @@ class IGAdapter(ExchangeAdapter):
 
         attach("stop", req.stop_loss)
         attach("limit", req.take_profit)
-        meta["status"] = "attached" if ("stopDistance" in payload or "limitDistance" in payload) else "none"
+        if "fatal_error" not in meta and "stopDistance" not in payload:
+            meta["fatal_error"] = f"attached stop missing for {asset}; broker order was not opened unprotected"
+        if "fatal_error" not in meta and "limitDistance" not in payload:
+            meta["fatal_error"] = f"attached limit missing for {asset}; broker order was not opened without a broker TP"
+        meta["status"] = "attached" if ("stopDistance" in payload and "limitDistance" in payload) else "none"
         return meta
 
     def _confirm(self, deal_reference: str) -> Dict[str, Any]:
@@ -639,7 +658,37 @@ class IGAdapter(ExchangeAdapter):
             )
         return _safe_float(summary.get("balance"), 0.0)
 
-    def close_position(self, position: Dict[str, Any], *, reason: str = "Manual Close") -> OrderResult:
+    @staticmethod
+    def _broker_sizing_payload(position: Dict[str, Any]) -> Dict[str, Any]:
+        metadata = position.get("metadata") if isinstance(position.get("metadata"), dict) else {}
+        broker_execution = metadata.get("broker_execution") if isinstance(metadata.get("broker_execution"), dict) else {}
+        broker_sizing = broker_execution.get("broker_sizing") if isinstance(broker_execution.get("broker_sizing"), dict) else {}
+        if not broker_sizing and isinstance(metadata.get("broker_sizing"), dict):
+            broker_sizing = metadata.get("broker_sizing") or {}
+        return dict(broker_sizing or {})
+
+    @classmethod
+    def _position_broker_size(cls, position: Dict[str, Any]) -> float:
+        broker_size = _safe_float(position.get("broker_position_size"), 0.0)
+        if broker_size > 0:
+            return broker_size
+        return _safe_float(cls._broker_sizing_payload(position).get("broker_size"), 0.0)
+
+    @staticmethod
+    def _round_broker_size_down(value: float, step: float) -> float:
+        step = _safe_float(step, 0.0)
+        if step <= 0:
+            return round(float(value or 0.0), 8)
+        return round(math.floor((float(value or 0.0) + 1e-12) / step) * step, 8)
+
+    def _close_position_with_size(
+        self,
+        position: Dict[str, Any],
+        *,
+        broker_size: float,
+        local_filled_qty: float,
+        reason: str,
+    ) -> OrderResult:
         if str(EXECUTION_ROLE or "trader").lower() != "trader":
             return OrderResult(order_id="", status="FAILED", error="execution role is read-only")
 
@@ -647,14 +696,7 @@ class IGAdapter(ExchangeAdapter):
         epic = str(position.get("broker_symbol") or "")
         direction = str(position.get("direction") or position.get("signal") or "BUY").upper()
         close_direction = "SELL" if direction == "BUY" else "BUY"
-        broker_size = _safe_float(position.get("broker_position_size"), 0.0)
-        if broker_size <= 0:
-            broker_size = _safe_float(
-                ((position.get("metadata") or {}).get("broker_execution") or {})
-                .get("broker_sizing", {})
-                .get("broker_size"),
-                0.0,
-            )
+        broker_size = _safe_float(broker_size, 0.0)
         if not deal_id or broker_size <= 0:
             return OrderResult(order_id="", status="FAILED", error="IG close missing deal id or broker size")
 
@@ -697,13 +739,15 @@ class IGAdapter(ExchangeAdapter):
                 error=f"IG rejected close: {confirm.get('reason') or deal_status}",
                 raw={"request": payload, "confirm": confirm},
             )
-        raw_close_price = _safe_float(confirm.get("level"), 0.0)
         asset = str(position.get("asset") or position.get("canonical_asset") or "")
+        raw_close_price = _safe_float(confirm.get("level"), 0.0)
+        if raw_close_price <= 0:
+            raw_close_price = _safe_float(position.get("current_price"), 0.0) or _safe_float(position.get("entry_price"), 0.0)
         close_price = _safe_float(normalize_ig_market_price(asset, raw_close_price), raw_close_price)
         return OrderResult(
             order_id=deal_id,
             status="FILLED",
-            filled_qty=_safe_float(position.get("position_size"), 0.0),
+            filled_qty=_safe_float(local_filled_qty, 0.0),
             avg_price=close_price,
             raw={
                 "request": payload,
@@ -711,7 +755,64 @@ class IGAdapter(ExchangeAdapter):
                 "reason": reason,
                 "broker_close_price": raw_close_price,
                 "display_close_price": close_price,
+                "broker_close_size": broker_size,
             },
+        )
+
+    def close_position(self, position: Dict[str, Any], *, reason: str = "Manual Close") -> OrderResult:
+        broker_size = self._position_broker_size(position)
+        return self._close_position_with_size(
+            position,
+            broker_size=broker_size,
+            local_filled_qty=_safe_float(position.get("position_size"), 0.0),
+            reason=reason,
+        )
+
+    def partial_close_position(
+        self,
+        position: Dict[str, Any],
+        *,
+        local_close_size: float,
+        reason: str = "Partial Close",
+    ) -> OrderResult:
+        total_local_size = _safe_float(position.get("position_size"), 0.0)
+        requested_local_size = _safe_float(local_close_size, 0.0)
+        broker_total_size = self._position_broker_size(position)
+        if total_local_size <= 0 or requested_local_size <= 0 or broker_total_size <= 0:
+            return OrderResult(order_id="", status="FAILED", error="IG partial close missing local or broker size")
+
+        fraction = min(1.0, max(0.0, requested_local_size / total_local_size))
+        broker_sizing = self._broker_sizing_payload(position)
+        step = _safe_float(broker_sizing.get("broker_size_step"), 0.01) or 0.01
+        min_size = _safe_float(broker_sizing.get("broker_min_size"), 0.0)
+        raw_broker_close_size = broker_total_size * fraction
+        broker_close_size = self._round_broker_size_down(raw_broker_close_size, step)
+        if min_size > 0 and raw_broker_close_size > 0 and broker_close_size < min_size < broker_total_size:
+            broker_close_size = min_size
+        if broker_close_size <= 0 or (min_size > 0 and broker_close_size < min_size):
+            return OrderResult(
+                order_id=str(position.get("broker_trade_id") or position.get("trade_id") or ""),
+                status="FAILED",
+                error=(
+                    f"IG partial size rejected for {position.get('asset')}: "
+                    f"broker_partial_below_min_size raw={raw_broker_close_size:.8f} min={min_size:.8f}"
+                ),
+                raw={
+                    "broker_total_size": broker_total_size,
+                    "requested_local_size": requested_local_size,
+                    "total_local_size": total_local_size,
+                    "fraction": fraction,
+                    "broker_size_step": step,
+                    "broker_min_size": min_size,
+                },
+            )
+        actual_local_close_size = min(total_local_size, total_local_size * (broker_close_size / broker_total_size))
+
+        return self._close_position_with_size(
+            position,
+            broker_size=broker_close_size,
+            local_filled_qty=actual_local_close_size,
+            reason=reason,
         )
 
     def _get_order_status(self, order_id: str) -> Optional[OrderResult]:

@@ -34,6 +34,72 @@ def _normalize_position_price(position: Dict[str, Any], asset: str, value: Any) 
         return numeric
 
 
+def normalize_position_price(position: Dict[str, Any], value: Any) -> float:
+    """Return a position price in the bot's display/strategy scale."""
+    asset = str(position.get("asset") or position.get("canonical_asset") or "")
+    return _normalize_position_price(position, asset, value)
+
+
+def normalize_position_prices(position: Dict[str, Any]) -> Dict[str, Any]:
+    """Normalize every price-bearing field on a broker position snapshot.
+
+    IG returns some instruments, especially silver and WTI CFDs, in broker
+    dealing scale while the strategy, risk, and dashboard use chart scale.
+    This copy keeps local state and UI math on one scale without mutating the
+    caller's object.
+    """
+    snapshot = dict(position or {})
+    if not _is_ig_position(snapshot):
+        return snapshot
+
+    asset = str(snapshot.get("asset") or snapshot.get("canonical_asset") or "")
+    price_fields = (
+        "entry_price",
+        "current_price",
+        "stop_loss",
+        "original_sl",
+        "take_profit",
+        "original_take_profit",
+        "requested_entry_price",
+        "highest_price",
+        "lowest_price",
+        "broker_entry_price",
+        "broker_stop_loss",
+        "broker_take_profit",
+    )
+    raw_prices: Dict[str, float] = {}
+    for field in price_fields:
+        if field not in snapshot:
+            continue
+        before = _coerce_float(snapshot.get(field))
+        after = _normalize_position_price(snapshot, asset, before)
+        if before and after and abs(before - after) > 1e-9:
+            raw_prices[field] = before
+            snapshot[field] = after
+        elif before:
+            snapshot[field] = after
+
+    levels = []
+    for raw_level in list(snapshot.get("take_profit_levels", []) or []):
+        before = _coerce_float(raw_level)
+        after = _normalize_position_price(snapshot, asset, before)
+        if after > 0:
+            levels.append(round(after, 10))
+        if before and after and abs(before - after) > 1e-9:
+            raw_prices.setdefault("take_profit_levels", []).append(before)  # type: ignore[union-attr]
+    if levels:
+        snapshot["take_profit_levels"] = levels
+
+    if raw_prices:
+        metadata = dict(snapshot.get("metadata") or {})
+        metadata["broker_price_normalization"] = {
+            "source": "ig_dealing_scale",
+            "raw_prices": raw_prices,
+        }
+        snapshot["metadata"] = metadata
+    return snapshot
+
+
 def _compute_position_pnl(
     asset: str,
     category: str,
@@ -64,7 +130,8 @@ def resolve_live_position_snapshot(
     asset = str(position.get("asset", "") or "")
     category = str(position.get("category", "forex") or "forex")
     direction = str(position.get("direction") or position.get("signal") or "BUY").upper()
-    entry_price = _normalize_position_price(position, asset, position.get("entry_price", 0.0))
+    normalized_position = normalize_position_prices(position)
+    entry_price = _normalize_position_price(normalized_position, asset, normalized_position.get("entry_price", 0.0))
     position_size = _coerce_float(position.get("position_size", 0.0))
 
     snapshot = dict(live_snapshot or {})
@@ -86,7 +153,7 @@ def resolve_live_position_snapshot(
         snapshot_price = snapshot.get("price")
         snapshot_age = _coerce_float(snapshot.get("age_seconds"), default=9999.0)
         if snapshot_price not in (None, 0, 0.0):
-            current_price = _normalize_position_price(position, asset, snapshot_price)
+            current_price = _normalize_position_price(normalized_position, asset, snapshot_price)
             price_age_seconds = max(0.0, snapshot_age)
             price_live = price_age_seconds <= float(live_snapshot_max_age_seconds or 0.0)
             snapshot_price_available = True
@@ -100,17 +167,17 @@ def resolve_live_position_snapshot(
         except Exception:
             fallback_price, fallback_source = None, ""
         if fallback_price not in (None, 0, 0.0):
-            current_price = _normalize_position_price(position, asset, fallback_price)
+            current_price = _normalize_position_price(normalized_position, asset, fallback_price)
             price_source = str(fallback_source or price_source or "")
             price_age_seconds = 0.0
             price_live = True
 
     if current_price in (None, 0, 0.0):
-        current_price = _normalize_position_price(position, asset, position.get("current_price", 0.0))
+        current_price = _normalize_position_price(normalized_position, asset, normalized_position.get("current_price", 0.0))
         if not price_source:
             price_source = str(position.get("current_price_source") or "")
 
-    current_price = _normalize_position_price(position, asset, current_price)
+    current_price = _normalize_position_price(normalized_position, asset, current_price)
     live_pnl = _compute_position_pnl(
         asset,
         category,
