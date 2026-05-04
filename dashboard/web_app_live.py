@@ -9071,6 +9071,8 @@ def _collect_runtime_service_details() -> Dict[str, Any]:
             meta_parts.append(f"age {float(snapshot_age):.0f}s")
         if status.get("environment"):
             meta_parts.append(str(status.get("environment")).upper())
+        if status.get("running_elsewhere"):
+            meta_parts.append("bot-owned")
         services["ctrader_live_depth"] = {
             "ok": healthy,
             "state": state,
@@ -9094,6 +9096,8 @@ def _collect_runtime_service_details() -> Dict[str, Any]:
         meta_parts = [f"{len(assets)} assets" if assets else str(status.get("store_path") or "no assets")]
         if snapshot_age not in (None, ""):
             meta_parts.append(f"age {float(snapshot_age):.0f}s")
+        if status.get("running_elsewhere"):
+            meta_parts.append("bot-owned")
         services["dukascopy_live_depth"] = {
             "ok": healthy,
             "state": state,

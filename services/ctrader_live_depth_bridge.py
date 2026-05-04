@@ -622,11 +622,20 @@ class CTraderLiveDepthBridge:
         stale = bool(expected_assets) and not market_quiet and (
             snapshot_age is None or snapshot_age > _DEFAULT_STALE_SECONDS
         )
-        healthy = bool(self._enabled and (running or market_quiet) and not stale)
+        fresh_store_snapshot = bool(
+            assets and snapshot_age is not None and snapshot_age <= _DEFAULT_STALE_SECONDS
+        )
+        running_elsewhere = bool(self._enabled and not running and fresh_store_snapshot and not stale)
+        healthy = bool(self._enabled and (running or market_quiet or running_elsewhere) and not stale)
         if not self._enabled:
             state = "disabled"
         elif healthy:
-            state = "market_closed" if market_quiet else "streaming"
+            if market_quiet:
+                state = "market_closed"
+            elif running_elsewhere:
+                state = "bot-owned"
+            else:
+                state = "streaming"
         elif stale:
             state = "stale"
         elif running:
@@ -636,6 +645,8 @@ class CTraderLiveDepthBridge:
         return {
             "enabled": self._enabled,
             "running": running,
+            "running_elsewhere": running_elsewhere,
+            "process_owner": "external" if running_elsewhere else "local",
             "pid": pid,
             "exit_code": exit_code,
             "assets": assets,
@@ -691,8 +702,9 @@ class CTraderLiveDepthBridge:
             or float(status.get("last_snapshot_age_seconds") or 0.0) > max_snapshot_age
         )
         market_quiet = bool(status.get("market_quiet"))
+        running_elsewhere = bool(status.get("running_elsewhere"))
         needs_restart = bool(
-            (not status.get("running") and not market_quiet)
+            (not status.get("running") and not running_elsewhere and not market_quiet)
             or (stale and not warming_no_snapshot and not market_quiet)
         )
         if market_quiet and not restart_reason:
