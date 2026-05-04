@@ -4610,10 +4610,15 @@ def _send_bot_command(action: str, payload: Dict[str, Any], *, timeout_seconds: 
         "source": "dashboard",
     }
     response_key = _bot_command_response_key(request_id)
+    client = None
+    dedicated_client = False
     try:
-        from services.redis_pool import get_client
+        from services.redis_pool import get_client, get_dedicated_client
 
-        client = get_client()
+        client = get_dedicated_client(socket_timeout=1.0)
+        dedicated_client = client is not None
+        if client is None:
+            client = get_client()
         if client is None:
             return {
                 "success": False,
@@ -4653,6 +4658,12 @@ def _send_bot_command(action: str, payload: Dict[str, Any], *, timeout_seconds: 
             "request_id": request_id,
             "bridge_error": True,
         }
+    finally:
+        if dedicated_client and client is not None:
+            try:
+                client.close()
+            except Exception:
+                pass
 
 
 def _dashboard_close_response_status(response: Dict[str, Any]) -> int:

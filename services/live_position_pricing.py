@@ -13,6 +13,27 @@ def _coerce_float(value: Any, default: float = 0.0) -> float:
         return float(default)
 
 
+def _is_ig_position(position: Dict[str, Any]) -> bool:
+    metadata = position.get("metadata") if isinstance(position.get("metadata"), dict) else {}
+    broker_execution = metadata.get("broker_execution") if isinstance(metadata.get("broker_execution"), dict) else {}
+    broker = str(position.get("broker") or broker_execution.get("broker") or "").strip().lower()
+    execution_mode = str(position.get("execution_mode") or "").strip().lower()
+    return broker == "ig" or execution_mode.startswith("ig")
+
+
+def _normalize_position_price(position: Dict[str, Any], asset: str, value: Any) -> float:
+    numeric = _coerce_float(value)
+    if not numeric or not _is_ig_position(position):
+        return numeric
+    try:
+        from services.ig_market_bridge import normalize_ig_market_price
+
+        normalized = normalize_ig_market_price(asset, numeric)
+        return _coerce_float(normalized, numeric)
+    except Exception:
+        return numeric
+
+
 def _compute_position_pnl(
     asset: str,
     category: str,
@@ -43,7 +64,7 @@ def resolve_live_position_snapshot(
     asset = str(position.get("asset", "") or "")
     category = str(position.get("category", "forex") or "forex")
     direction = str(position.get("direction") or position.get("signal") or "BUY").upper()
-    entry_price = _coerce_float(position.get("entry_price", 0.0))
+    entry_price = _normalize_position_price(position, asset, position.get("entry_price", 0.0))
     position_size = _coerce_float(position.get("position_size", 0.0))
 
     snapshot = dict(live_snapshot or {})
@@ -65,7 +86,7 @@ def resolve_live_position_snapshot(
         snapshot_price = snapshot.get("price")
         snapshot_age = _coerce_float(snapshot.get("age_seconds"), default=9999.0)
         if snapshot_price not in (None, 0, 0.0):
-            current_price = _coerce_float(snapshot_price)
+            current_price = _normalize_position_price(position, asset, snapshot_price)
             price_age_seconds = max(0.0, snapshot_age)
             price_live = price_age_seconds <= float(live_snapshot_max_age_seconds or 0.0)
             snapshot_price_available = True
@@ -79,17 +100,17 @@ def resolve_live_position_snapshot(
         except Exception:
             fallback_price, fallback_source = None, ""
         if fallback_price not in (None, 0, 0.0):
-            current_price = _coerce_float(fallback_price)
+            current_price = _normalize_position_price(position, asset, fallback_price)
             price_source = str(fallback_source or price_source or "")
             price_age_seconds = 0.0
             price_live = True
 
     if current_price in (None, 0, 0.0):
-        current_price = _coerce_float(position.get("current_price", 0.0))
+        current_price = _normalize_position_price(position, asset, position.get("current_price", 0.0))
         if not price_source:
             price_source = str(position.get("current_price_source") or "")
 
-    current_price = _coerce_float(current_price)
+    current_price = _normalize_position_price(position, asset, current_price)
     live_pnl = _compute_position_pnl(
         asset,
         category,

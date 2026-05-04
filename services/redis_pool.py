@@ -94,6 +94,31 @@ def get_client():
         return None
 
 
+def get_dedicated_client(*, socket_timeout=None):
+    """
+    Return an independent Redis client for blocking or command-bridge work.
+
+    The shared pool is intentionally small so dashboard refreshes cannot grow
+    without bound. Long-lived BLPOP listeners should not consume that pool.
+    """
+    try:
+        import redis
+        from config.config import REDIS_URL
+
+        client = redis.from_url(
+            REDIS_URL,
+            socket_connect_timeout=3,
+            socket_timeout=socket_timeout,
+            health_check_interval=30,
+            decode_responses=True,
+        )
+        client.ping()
+        return client
+    except Exception as e:
+        logger.debug(f"[RedisPool] dedicated client unavailable: {e}")
+        return None
+
+
 def get_pubsub(old_pubsub=None):
     """
     Return a dedicated pubsub object for subscriber loops.

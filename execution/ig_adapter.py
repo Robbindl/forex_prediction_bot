@@ -16,7 +16,7 @@ from config.config import (
 from execution.exchange_adapter import ExchangeAdapter, OrderBookSnapshot, OrderRequest, OrderResult
 from risk.broker_sizer import BrokerContractSpec, BrokerPositionSizer
 from risk.position_sizer import PositionSizer
-from services.ig_market_bridge import IGMarketBridge, IGRequestError
+from services.ig_market_bridge import IGMarketBridge, IGRequestError, normalize_ig_market_price
 from utils.logger import get_logger
 
 logger = get_logger()
@@ -41,11 +41,37 @@ def _safe_int(value: Any, default: int = 0) -> int:
         return int(default)
 
 
+def _env_float(name: str, default: float) -> float:
+    try:
+        text = str(os.getenv(name, "")).strip()
+        return float(text) if text else float(default)
+    except Exception:
+        return float(default)
+
+
 def _decimals_from_step(value: float) -> int:
     text = f"{float(value or 0.0):.10f}".rstrip("0").rstrip(".")
     if "." not in text:
         return 0
     return min(10, max(0, len(text.split(".", 1)[1])))
+
+
+_STOP_DISTANCE_PCT_DEFAULTS = {
+    "forex": 0.015,
+    "commodities": 0.035,
+    "indices": 0.035,
+    "crypto": 0.060,
+}
+
+
+def _max_stop_distance_pct(category: str) -> float:
+    key = str(category or "").strip().lower() or "forex"
+    default = _STOP_DISTANCE_PCT_DEFAULTS.get(key, 0.025)
+    category_key = key.upper().replace("-", "_")
+    configured = _env_float(f"IG_MAX_STOP_DISTANCE_PCT_{category_key}", -1.0)
+    if configured <= 0:
+        configured = _env_float("IG_MAX_STOP_DISTANCE_PCT", default)
+    return max(0.001, float(configured or default))
 
 
 class IGAdapter(ExchangeAdapter):
@@ -177,6 +203,14 @@ class IGAdapter(ExchangeAdapter):
         if payload["orderType"] != "MARKET" and req.price:
             payload["level"] = float(req.price)
         attached_orders = self._apply_attached_orders(payload, req, spec_payload or {}, spec)
+        fatal_attached_error = str((attached_orders or {}).get("fatal_error") or "").strip()
+        if fatal_attached_error:
+            return OrderResult(
+                order_id="",
+                status="FAILED",
+                error=f"IG attached order rejected locally: {fatal_attached_error}",
+                raw={"request": payload, "broker_sizing": converted.to_dict(), "attached_orders": attached_orders},
+            )
 
         if self._dry_run:
             return OrderResult(
@@ -237,7 +271,8 @@ class IGAdapter(ExchangeAdapter):
             )
 
         deal_id = str(confirm.get("dealId") or ack.get("dealReference") or deal_reference)
-        fill_price = _safe_float(confirm.get("level"), req.price or 0.0)
+        raw_fill_price = _safe_float(confirm.get("level"), req.price or 0.0)
+        fill_price = _safe_float(normalize_ig_market_price(asset, raw_fill_price), raw_fill_price)
         trade = self._build_trade(
             req,
             asset,
@@ -254,7 +289,14 @@ class IGAdapter(ExchangeAdapter):
             status="FILLED",
             filled_qty=float(req.local_quantity or req.quantity or 0.0),
             avg_price=fill_price,
-            raw={"trade": trade, "confirm": confirm, "broker_sizing": converted.to_dict(), "attached_orders": attached_orders},
+            raw={
+                "trade": trade,
+                "confirm": confirm,
+                "broker_sizing": converted.to_dict(),
+                "attached_orders": attached_orders,
+                "broker_fill_price": raw_fill_price,
+                "display_fill_price": fill_price,
+            },
         )
 
     def _contract_spec(self, *, asset: str, category: str, epic: str) -> Optional[BrokerContractSpec]:
@@ -315,6 +357,8 @@ class IGAdapter(ExchangeAdapter):
         spec: BrokerContractSpec,
     ) -> Dict[str, Any]:
         side = str(req.side or "BUY").upper()
+        asset = str(req.asset or req.symbol or "")
+        category = str(req.category or "").strip().lower()
         point_size = _safe_float(spec.point_size, 0.0)
         bid = _safe_float(spec_payload.get("bid"), 0.0)
         offer = _safe_float(spec_payload.get("offer"), 0.0)
@@ -328,6 +372,7 @@ class IGAdapter(ExchangeAdapter):
             "model": "ig_distance",
             "reference_price": round(reference, 10),
             "point_size": round(point_size, 10),
+            "max_stop_distance_pct": round(_max_stop_distance_pct(category), 6),
         }
         if reference <= 0 or point_size <= 0:
             meta["status"] = "skipped_missing_reference_or_point_size"
@@ -363,7 +408,7 @@ class IGAdapter(ExchangeAdapter):
             }
         )
 
-        decimals = _safe_int(spec_payload.get("decimal_places"), 0)
+        decimals = max(_decimals_from_step(point_size), _safe_int(spec_payload.get("decimal_places"), 0))
         if decimals < 0 or decimals > 8:
             decimals = _decimals_from_step(point_size)
 
@@ -386,7 +431,7 @@ class IGAdapter(ExchangeAdapter):
             return float(aligned)
 
         def attach(kind: str, requested_level: Any) -> None:
-            level = _safe_float(requested_level, 0.0)
+            level = _safe_float(normalize_ig_market_price(asset, requested_level), 0.0)
             if level <= 0:
                 return
             valid_side = (
@@ -394,6 +439,22 @@ class IGAdapter(ExchangeAdapter):
                 or (kind == "limit" and ((side == "BUY" and level > reference) or (side == "SELL" and level < reference)))
             )
             raw_points = abs(reference - level) / point_size if valid_side else 0.0
+            if kind == "stop" and valid_side:
+                max_stop_distance = abs(reference) * _max_stop_distance_pct(category)
+                requested_distance = abs(reference - level)
+                if max_stop_distance > 0 and requested_distance > max_stop_distance:
+                    meta[kind] = {
+                        "requested_level": level,
+                        "requested_points": round(raw_points, 8),
+                        "requested_distance": round(requested_distance, 8),
+                        "max_distance": round(max_stop_distance, 8),
+                        "status": "rejected_requested_stop_too_wide",
+                    }
+                    meta["fatal_error"] = (
+                        f"requested stop distance too wide for {asset}: "
+                        f"{requested_distance:.6f} > {max_stop_distance:.6f}"
+                    )
+                    return
             points = raw_points
             if required_points > 0 and points < required_points:
                 points = required_points
@@ -406,6 +467,23 @@ class IGAdapter(ExchangeAdapter):
                     "status": "skipped_invalid_side_or_distance",
                 }
                 return
+            if kind == "stop" and required_points > raw_points and raw_points > 0:
+                widened_distance = points * point_size
+                max_stop_distance = abs(reference) * _max_stop_distance_pct(category)
+                if max_stop_distance > 0 and widened_distance > max_stop_distance:
+                    meta[kind] = {
+                        "requested_level": level,
+                        "requested_points": round(raw_points, 8),
+                        "distance_points": round(points, 8),
+                        "estimated_level": estimate_level(kind, points),
+                        "max_distance": round(max_stop_distance, 8),
+                        "status": "rejected_broker_min_stop_too_wide",
+                    }
+                    meta["fatal_error"] = (
+                        f"broker minimum stop distance too wide for {asset}: "
+                        f"{widened_distance:.6f} > {max_stop_distance:.6f}"
+                    )
+                    return
             payload_key = "stopDistance" if kind == "stop" else "limitDistance"
             payload[payload_key] = round(points, 8)
             meta[kind] = {
@@ -505,6 +583,7 @@ class IGAdapter(ExchangeAdapter):
             "epic": epic,
             "deal_id": deal_id,
             "deal_reference": deal_reference,
+            "display_entry_price": fill_price,
             "broker_sizing": broker_sizing,
             "attached_orders": dict(attached_orders or {}),
         }
@@ -618,12 +697,21 @@ class IGAdapter(ExchangeAdapter):
                 error=f"IG rejected close: {confirm.get('reason') or deal_status}",
                 raw={"request": payload, "confirm": confirm},
             )
+        raw_close_price = _safe_float(confirm.get("level"), 0.0)
+        asset = str(position.get("asset") or position.get("canonical_asset") or "")
+        close_price = _safe_float(normalize_ig_market_price(asset, raw_close_price), raw_close_price)
         return OrderResult(
             order_id=deal_id,
             status="FILLED",
             filled_qty=_safe_float(position.get("position_size"), 0.0),
-            avg_price=_safe_float(confirm.get("level"), 0.0),
-            raw={"request": payload, "confirm": confirm, "reason": reason},
+            avg_price=close_price,
+            raw={
+                "request": payload,
+                "confirm": confirm,
+                "reason": reason,
+                "broker_close_price": raw_close_price,
+                "display_close_price": close_price,
+            },
         )
 
     def _get_order_status(self, order_id: str) -> Optional[OrderResult]:

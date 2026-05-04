@@ -4,6 +4,7 @@ core/engine.py — TradingCore: single central engine.
 from __future__ import annotations
 
 import json
+import os
 import threading
 import time
 from collections import Counter
@@ -738,6 +739,8 @@ class TradingCore:
         trade_id_filter = {str(tid) for tid in trade_ids or [] if str(tid or "").strip()}
         updates: List[Dict[str, Any]] = []
         for pos in self.state.get_open_positions():
+            if self._is_broker_managed_position(pos):
+                continue
             trade_id = str(pos.get("trade_id", "") or "")
             if trade_id_filter and trade_id not in trade_id_filter:
                 continue
@@ -890,6 +893,16 @@ class TradingCore:
             trade_id = str(item.get("trade_id", "") or "")
             pos = self.state.get_open_position(trade_id)
             if not pos:
+                continue
+            if self._is_broker_managed_position(pos):
+                actions.append(
+                    {
+                        **item,
+                        "success": False,
+                        "action": "skipped",
+                        "reason": "broker_managed_position",
+                    }
+                )
                 continue
 
             asset = str(pos.get("asset", "") or "")
@@ -1759,11 +1772,70 @@ class TradingCore:
         except Exception as e:
             logger.error(f"[TradingCore] on_position_updated error: {e}")
 
+    @staticmethod
+    def _is_broker_managed_position(pos: Dict[str, Any]) -> bool:
+        metadata = pos.get("metadata") if isinstance(pos.get("metadata"), dict) else {}
+        broker_execution = metadata.get("broker_execution") if isinstance(metadata.get("broker_execution"), dict) else {}
+        broker = str(pos.get("broker") or broker_execution.get("broker") or "").strip().lower()
+        execution_mode = str(pos.get("execution_mode") or "").strip().lower()
+        return bool((broker and broker != "paper") or execution_mode.startswith("ig"))
+
+    @staticmethod
+    def _normalize_position_price(pos: Dict[str, Any], value: Any) -> float:
+        try:
+            numeric = float(value or 0.0)
+        except Exception:
+            return 0.0
+        if numeric <= 0 or not TradingCore._is_broker_managed_position(pos):
+            return numeric
+        try:
+            from services.ig_market_bridge import normalize_ig_market_price
+
+            asset = str(pos.get("asset") or pos.get("canonical_asset") or "")
+            normalized = normalize_ig_market_price(asset, numeric)
+            return float(normalized if normalized is not None else numeric)
+        except Exception:
+            return numeric
+
     def _restore_paper_trader_positions(self) -> None:
         if self._paper_trader is None:
             return
         for pos in self.state.get_open_positions():
+            if self._is_broker_managed_position(pos):
+                continue
             self._paper_trader.restore_position(pos)
+
+    def _clear_paper_positions_in_broker_mode(self) -> None:
+        if not self._broker_balance_enabled():
+            return
+        if str(os.getenv("BROKER_MODE_KEEP_PAPER_POSITIONS", "")).strip().lower() in {"1", "true", "yes", "on"}:
+            return
+        cleared = 0
+        for pos in list(self.state.get_open_positions() or []):
+            if self._is_broker_managed_position(pos):
+                continue
+            trade_id = str(pos.get("trade_id") or "").strip()
+            if not trade_id:
+                continue
+            entry = self._normalize_position_price(pos, pos.get("entry_price", 0))
+            metadata = dict(pos.get("metadata") or {})
+            metadata["broker_mode_cleanup"] = {
+                "reason": "paper position is not broker-authoritative in IG execution mode",
+                "execution_mode": str(EXECUTION_MODE or ""),
+            }
+            closed = self.state.close_position(
+                trade_id,
+                entry,
+                "Broker mode cleanup: paper-only position not on IG",
+                0.0,
+                extra_updates={"metadata": metadata},
+            )
+            if closed:
+                cleared += 1
+        if cleared:
+            logger.warning(
+                f"[TradingCore] Cleared {cleared} paper-only open position(s) because IG broker mode is active"
+            )
 
     def _start_ohlcv_prewarm(self) -> None:
         def _prewarm() -> None:
@@ -2009,11 +2081,18 @@ class TradingCore:
         return {"success": False, "error": f"Unsupported dashboard command: {action or 'unknown'}"}
 
     def _dashboard_command_loop(self) -> None:
+        client = None
+        dedicated_client = False
         while not self._stop_event.is_set():
             try:
-                from services.redis_pool import get_client
+                if client is None:
+                    from services.redis_pool import get_client, get_dedicated_client
 
-                client = get_client()
+                    client = get_dedicated_client(socket_timeout=None)
+                    dedicated_client = client is not None
+                    if client is None:
+                        client = get_client()
+
                 if client is None:
                     time.sleep(2.0)
                     continue
@@ -2041,6 +2120,13 @@ class TradingCore:
                 except Exception as exc:
                     logger.debug(f"[TradingCore] Dashboard command response failed: {exc}")
             except Exception as exc:
+                if dedicated_client and client is not None:
+                    try:
+                        client.close()
+                    except Exception:
+                        pass
+                client = None
+                dedicated_client = False
                 logger.warning(f"[TradingCore] Dashboard command bridge error: {exc} — retrying in 5s")
                 time.sleep(5.0)
 
@@ -2083,6 +2169,7 @@ class TradingCore:
             self._configure_paper_trader_callbacks()
             # ──────────────────────────────────────────────────────────────────
 
+            self._clear_paper_positions_in_broker_mode()
             self._restore_paper_trader_positions()
 
             # ── Offline gap-fill check ────────────────────────────────────────
@@ -5619,6 +5706,8 @@ class TradingCore:
         }
 
     def _build_gapfill_runtime(self, pos: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+        if self._is_broker_managed_position(pos):
+            return None
         trade_id = str(pos.get("trade_id", "") or "")
         asset = str(pos.get("asset", "") or "")
         category = str(pos.get("category", "forex") or "forex")
@@ -5898,6 +5987,8 @@ class TradingCore:
         size: float,
         direction: str,
     ) -> float:
+        entry = TradingCore._normalize_position_price(pos, entry)
+        exit_price = TradingCore._normalize_position_price(pos, exit_price)
         try:
             from risk.position_sizer import PositionSizer as _PS
 
@@ -5985,7 +6076,7 @@ class TradingCore:
         pos = self.state.get_open_position(trade_id)
         if not pos:
             return None
-        entry = float(pos.get("entry_price", 0))
+        entry = self._normalize_position_price(pos, pos.get("entry_price", 0))
         direction = pos.get("direction", pos.get("signal", "BUY"))
         size = float(pos.get("position_size", 0))
         exit_price, pnl = self._manual_close_exit_price(pos, entry, size, direction)

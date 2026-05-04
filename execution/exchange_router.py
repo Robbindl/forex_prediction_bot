@@ -214,5 +214,8 @@ class ExchangeRouter:
             "epic not found",
             "contract spec missing",
             "attached_order_level_error",
+            "attached order rejected locally",
+            "requested stop distance too wide",
+            "broker minimum stop distance too wide",
         ]
         return any(phrase in error_lower for phrase in permanent_phrases)

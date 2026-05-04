@@ -79,7 +79,7 @@ _STREAMING_SESSION_TTL_SEC = 5 * 60.0
 _PROJECT_ROOT = Path(__file__).resolve().parent.parent
 _REST_ALLOWANCE_HOLDOFF_PATH = _PROJECT_ROOT / "data" / "ig_rest_allowance_holdoff.json"
 _CONTRACT_SPEC_CACHE_PATH = _PROJECT_ROOT / "data" / "ig_contract_specs.json"
-_CONTRACT_SPEC_SCHEMA_VERSION = 2
+_CONTRACT_SPEC_SCHEMA_VERSION = 3
 
 _DEFAULT_EPIC_MAP = {
     "XAU/USD": "CS.D.CFDGOLD.BMU.IP",
@@ -471,7 +471,15 @@ def _mid_price(payload: Dict[str, Any]) -> Optional[float]:
     return last if last is not None else (bid if bid is not None else ask)
 
 
-def _normalize_ig_commodity_price(asset: str, value: Optional[float]) -> Optional[float]:
+_BROKER_CENT_PRICE_ASSETS = {"XAG/USD", "WTI"}
+
+
+def ig_price_scale_factor(asset: str) -> float:
+    canonical = _canonical_asset(asset)
+    return 100.0 if canonical in _BROKER_CENT_PRICE_ASSETS else 1.0
+
+
+def normalize_ig_market_price(asset: str, value: Optional[float]) -> Optional[float]:
     if value is None:
         return None
     try:
@@ -480,9 +488,29 @@ def _normalize_ig_commodity_price(asset: str, value: Optional[float]) -> Optiona
         return None
 
     canonical = _canonical_asset(asset)
-    if canonical in {"XAG/USD", "WTI"} and numeric >= 1000.0:
-        return numeric / 100.0
+    scale = ig_price_scale_factor(canonical)
+    if scale > 1.0 and abs(numeric) >= 1000.0:
+        return numeric / scale
     return numeric
+
+
+def denormalize_ig_market_price(asset: str, value: Optional[float]) -> Optional[float]:
+    if value is None:
+        return None
+    try:
+        numeric = float(value)
+    except Exception:
+        return None
+
+    canonical = _canonical_asset(asset)
+    scale = ig_price_scale_factor(canonical)
+    if scale > 1.0 and 0.0 < abs(numeric) < 1000.0:
+        return numeric * scale
+    return numeric
+
+
+def _normalize_ig_commodity_price(asset: str, value: Optional[float]) -> Optional[float]:
+    return normalize_ig_market_price(asset, value)
 
 
 def _parse_epic_map(raw: str) -> Dict[str, str]:
@@ -783,10 +811,15 @@ class IGMarketBridge:
                 rule = dealing_rules.get(source_key) if isinstance(dealing_rules.get(source_key), dict) else {}
                 payload[f"{target_key}_value"] = float(_safe_float(rule.get("value")) or 0.0)
                 payload[f"{target_key}_unit"] = str(rule.get("unit") or "")
-            payload["bid"] = float(_safe_float(snapshot.get("bid")) or 0.0)
-            payload["offer"] = float(_safe_float(snapshot.get("offer")) or 0.0)
+            raw_bid = _safe_float(snapshot.get("bid"))
+            raw_offer = _safe_float(snapshot.get("offer"))
+            payload["broker_bid"] = float(raw_bid or 0.0)
+            payload["broker_offer"] = float(raw_offer or 0.0)
+            payload["bid"] = float(normalize_ig_market_price(canonical, raw_bid) or 0.0)
+            payload["offer"] = float(normalize_ig_market_price(canonical, raw_offer) or 0.0)
             payload["decimal_places"] = _safe_int(snapshot.get("decimalPlacesFactor"))
             payload["scaling_factor"] = float(_safe_float(snapshot.get("scalingFactor")) or 0.0)
+            payload["price_scale_factor"] = ig_price_scale_factor(canonical)
             self._store_contract_spec_cache(cache_key, payload)
             return payload
         except IGRequestError:

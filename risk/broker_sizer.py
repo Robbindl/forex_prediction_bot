@@ -162,9 +162,9 @@ def _fallback_ig_point_size(asset: str, category: str, local_pip: float, name: s
     if category in {"indices", "crypto"}:
         return 1.0
     upper_name = str(name or "").upper()
-    if asset in {"XAG/USD", "SI=F"}:
+    if asset in {"XAG/USD", "SI=F", "WTI", "WTI/USD", "CL=F"}:
         return 0.01
-    if asset in {"XAU/USD", "GC=F", "WTI", "CL=F"} or "$1" in upper_name:
+    if asset in {"XAU/USD", "GC=F"} or "$1" in upper_name:
         return 1.0
     return float(local_pip or 1.0)
 
