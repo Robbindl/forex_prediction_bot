@@ -2023,6 +2023,12 @@ function renderPositions(pos){
     const memoryMeta=memorySamples?`<div style="font-size:10px;color:var(--tx3);margin-top:2px">Memory ${memoryScore.toFixed(0)} · n${memorySamples}</div>`:'';
     const provenanceMeta=provenance?`<div style="font-size:10px;color:var(--tx3);margin-top:2px">${provenance}</div>`:'';
     const brokerMeta=(brokerQ||brokerState)?`<div style="font-size:10px;color:var(--tx3);margin-top:2px">Broker ${brokerQ.toFixed(2)}${brokerState?` · ${brokerState}`:''}</div>`:'';
+    const execBroker=String(p.broker||'paper').toUpperCase();
+    const execMode=String(p.execution_mode||'').replace(/_/g,' ');
+    const brokerSymbol=String(p.broker_symbol||'');
+    const brokerSize=Number(p.broker_position_size||0);
+    const brokerDeal=String(p.broker_trade_id||p.broker_deal_reference||'');
+    const brokerExecMeta=(execBroker!=='PAPER'||brokerSymbol||brokerSize>0)?`<div style="font-size:10px;color:var(--tx3);margin-top:2px">Execution ${execBroker}${execMode&&execMode.toUpperCase()!==execBroker?` · ${execMode}`:''}${brokerSymbol?` · ${brokerSymbol}`:''}${brokerSize>0?` · size ${fmtLot(brokerSize)}`:''}${brokerDeal?` · deal ${brokerDeal.slice(0,10)}`:''}</div>`:'';
     const microMeta=`<div style="font-size:10px;color:var(--tx3);margin-top:2px">Micro ${microQ.toFixed(2)} · ${depthLabel(p)}</div>`;
     const postureMeta=(rrMult!==1||stopMult!==1)?`<div style="font-size:10px;color:var(--tx3);margin-top:2px">RR x${rrMult.toFixed(2)} · SL x${stopMult.toFixed(2)}</div>`:'';
     const rankMeta=oppScore?`<div style="font-size:10px;color:var(--tx3);margin-top:2px">Opp ${oppScore.toFixed(3)}${oppRank?` · #${oppRank}`:''}</div>`:'';
@@ -2033,7 +2039,7 @@ function renderPositions(pos){
     const ladder=targetLadder(p);
     const targetMeta=ladder.length ? `<div style="font-size:10px;color:var(--tx3);margin-top:2px">${ladder.map((level, idx)=>`${idx < tpHit ? 'Hit ' : idx === tpHit && tpHit > 0 ? 'Next ' : ''}${level.label} ${fmt(level.price)}${level.size>0?` · ${(level.size*100).toFixed(0)}%`:''}${level.rr>0?` · ${level.rr.toFixed(1)}R`:''}`).join('<br>')}</div>` : (runnerTp && Math.abs(runnerTp-nextTp)>1e-9 ? `<div style="font-size:10px;color:var(--tx3);margin-top:2px">Runner ${fmt(runnerTp)}</div>` : '');
     const killReason=knownKillReason(p);
-    return`<tr><td><strong>${p.asset||'?'}</strong><br><span style="font-size:10px;color:var(--tx3)">${p.category||''}</span>${memoryMeta}${execMeta}${eliteMeta}${readyMeta}${provenanceMeta}${brokerMeta}${microMeta}${crossMeta}${setupMeta}${patternMeta}${regimeMeta}${killReason?`<div style="font-size:10px;color:var(--rd);margin-top:2px">${killReason}</div>`:''}${reviewNotesLine(p)?`<div style="font-size:10px;color:var(--tx3);margin-top:2px">${reviewNotesLine(p)}</div>`:''}${pBar}</td><td style="color:${dir==='BUY'?'var(--gr)':'var(--rd)'};font-weight:700">${dir}</td><td style="font-family:monospace;font-size:11px">${fmtLot(lot)}</td><td style="font-family:monospace">${fmt(e)}</td><td style="font-family:monospace;font-weight:600;color:${curCol}">${fmt(cur)}</td><td style="font-family:monospace;color:var(--rd)">${fmt(sl)}</td><td style="font-family:monospace;color:var(--gr)">${fmt(nextTp||tp)}${targetMeta}${postureMeta}</td><td class="${pnl>=0?'pnl-pos':'pnl-neg'}" style="font-weight:700">${pnl>=0?'+':''}$${pnl.toFixed(2)}</td><td>${(Number(p.confidence||0)*100).toFixed(0)}%${rankMeta}${noteMeta}</td><td style="font-size:11px;white-space:nowrap">${openStr}</td><td><button onclick="confirmClose('${tid}','${p.asset||'?'}')" style="padding:4px 10px;border-radius:6px;border:none;background:rgba(255,69,96,.15);color:var(--rd);cursor:pointer;font-size:11px;font-weight:600;white-space:nowrap" onmouseover="this.style.background='var(--rd)';this.style.color='#fff'" onmouseout="this.style.background='rgba(255,69,96,.15)';this.style.color='var(--rd)'">✕ Close</button></td></tr>`;
+    return`<tr><td><strong>${p.asset||'?'}</strong><br><span style="font-size:10px;color:var(--tx3)">${p.category||''}</span>${memoryMeta}${execMeta}${eliteMeta}${readyMeta}${provenanceMeta}${brokerMeta}${brokerExecMeta}${microMeta}${crossMeta}${setupMeta}${patternMeta}${regimeMeta}${killReason?`<div style="font-size:10px;color:var(--rd);margin-top:2px">${killReason}</div>`:''}${reviewNotesLine(p)?`<div style="font-size:10px;color:var(--tx3);margin-top:2px">${reviewNotesLine(p)}</div>`:''}${pBar}</td><td style="color:${dir==='BUY'?'var(--gr)':'var(--rd)'};font-weight:700">${dir}</td><td style="font-family:monospace;font-size:11px">${fmtLot(lot)}</td><td style="font-family:monospace">${fmt(e)}</td><td style="font-family:monospace;font-weight:600;color:${curCol}">${fmt(cur)}</td><td style="font-family:monospace;color:var(--rd)">${fmt(sl)}</td><td style="font-family:monospace;color:var(--gr)">${fmt(nextTp||tp)}${targetMeta}${postureMeta}</td><td class="${pnl>=0?'pnl-pos':'pnl-neg'}" style="font-weight:700">${pnl>=0?'+':''}$${pnl.toFixed(2)}</td><td>${(Number(p.confidence||0)*100).toFixed(0)}%${rankMeta}${noteMeta}</td><td style="font-size:11px;white-space:nowrap">${openStr}</td><td><button onclick="confirmClose('${tid}','${p.asset||'?'}')" style="padding:4px 10px;border-radius:6px;border:none;background:rgba(255,69,96,.15);color:var(--rd);cursor:pointer;font-size:11px;font-weight:600;white-space:nowrap" onmouseover="this.style.background='var(--rd)';this.style.color='#fff'" onmouseout="this.style.background='rgba(255,69,96,.15)';this.style.color='var(--rd)'">✕ Close</button></td></tr>`;
   }).join('');
 }
 async function loadTopOpportunities(forceRefresh=false){
@@ -2105,8 +2111,13 @@ async function executeClose(){
       if(mode==='category')payload.category=cat;
       r=await fetchProtectedJson('/api/position/close-bulk',{method:'POST',timeoutMs:15000,body:JSON.stringify(payload)});
     }
-    const ok=r.success||(r.closed>0);
-    showToast(ok?`✅ ${r.closed!=null?r.closed+' position(s) closed':r.message||'Closed'}`:`❌ ${r.error||'Failed'}`,ok?'success':'error');
+    const ok=r.success||(Number(r.closed||0)>0);
+    const skipped=Number(r.skipped||0);
+    const broker=String(r.broker||'').toUpperCase();
+    let msg=ok?(r.message||`${Number(r.closed||1)} position(s) closed`):(r.error||'Failed');
+    if(ok&&broker&&broker!=='PAPER'&&mode==='single')msg=`${broker} closed ${r.asset||''}`.trim();
+    if(ok&&skipped>0)msg+=` · ${skipped} skipped`;
+    showToast(ok?`✅ ${msg}`:`❌ ${msg}`,ok?'success':'error');
     setTimeout(loadMain,800);
     setTimeout(loadHistory,1200);
   }catch(e){showToast('❌ Network error','error');}

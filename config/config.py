@@ -68,6 +68,22 @@ IG_ROUTED_ASSETS      = [
 IG_ROUTE_TO_DERIV_BY_DEFAULT = os.getenv("IG_ROUTE_TO_DERIV_BY_DEFAULT", "false").lower() == "true"
 IG_MAX_ROUTED_ASSETS = _parse_int(os.getenv("IG_MAX_ROUTED_ASSETS", "6"), 6)
 IG_STREAMING_HOLDOFF_SEC = _parse_int(os.getenv("IG_STREAMING_HOLDOFF_SEC", "300"), 300)
+EXECUTION_MODE = os.getenv("EXECUTION_MODE", "paper").strip().lower() or "paper"
+EXECUTION_ROLE = os.getenv("EXECUTION_ROLE", "trader").strip().lower() or "trader"
+IG_EXECUTION_ENABLED = os.getenv("IG_EXECUTION_ENABLED", "false").lower() == "true"
+_IG_EXECUTION_DRY_RUN_DEFAULT = "false" if EXECUTION_MODE == "ig_demo" else "true"
+IG_EXECUTION_DRY_RUN = os.getenv("IG_EXECUTION_DRY_RUN", _IG_EXECUTION_DRY_RUN_DEFAULT).lower() == "true"
+IG_EXECUTION_CURRENCY = os.getenv("IG_EXECUTION_CURRENCY", "USD").strip().upper() or "USD"
+IG_EXECUTION_ROUTE_CATEGORIES = [
+    item.strip().lower()
+    for item in os.getenv("IG_EXECUTION_ROUTE_CATEGORIES", "").split(",")
+    if item.strip()
+]
+IG_EXECUTION_ROUTE_ASSETS = [
+    item.strip()
+    for item in os.getenv("IG_EXECUTION_ROUTE_ASSETS", "").split(",")
+    if item.strip()
+]
 BINANCE_PUBLIC_DATA_ENABLED = os.getenv("BINANCE_PUBLIC_DATA_ENABLED", "true").lower() == "true"
 BINANCE_TRADFI_CONTEXT_ENABLED = os.getenv("BINANCE_TRADFI_CONTEXT_ENABLED", "true").lower() == "true"
 BYBIT_PUBLIC_DATA_ENABLED = os.getenv("BYBIT_PUBLIC_DATA_ENABLED", "true").lower() == "true"

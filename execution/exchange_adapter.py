@@ -16,11 +16,16 @@ class OrderRequest:
     symbol:     str
     side:       str          # "BUY" or "SELL"
     quantity:   float
+    asset:      str = ""
+    category:   str = ""
+    local_quantity: float = 0.0
+    broker_quantity: Optional[float] = None
     order_type: str = "MARKET"   # "MARKET" or "LIMIT"
     price:      Optional[float] = None
     stop_loss:  Optional[float] = None
     take_profit:Optional[float] = None
     client_id:  str = ""
+    metadata:   dict = field(default_factory=dict)
 
 
 @dataclass

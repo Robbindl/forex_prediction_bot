@@ -21,14 +21,16 @@ class PaperAdapter(ExchangeAdapter):
 
     def _place_order(self, req: OrderRequest) -> OrderResult:
         signal = {
-            "asset":        req.symbol,
+            "asset":        req.asset or req.symbol,
             "direction":    req.side,
             "signal":       req.side,
-            "confidence":   0.8,
+            "confidence":   float((req.metadata or {}).get("confidence") or 0.8),
             "entry_price":  req.price or 0.0,
             "stop_loss":    req.stop_loss or 0.0,
             "take_profit":  req.take_profit or 0.0,
-            "position_size": req.quantity,
+            "position_size": req.local_quantity or req.quantity,
+            "category":     req.category or "forex",
+            "metadata":     dict(req.metadata or {}),
         }
         trade = self._pt.execute_signal(signal)
         if trade:

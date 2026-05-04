@@ -477,9 +477,10 @@ class SystemState:
             return None
 
     def has_open_position_for(self, canonical_asset: str) -> bool:
+        target = str(canonical_asset or "")
         with self._lock:
             return any(
-                p.get("canonical_asset") == canonical_asset
+                p.get("canonical_asset") == target or p.get("asset") == target
                 for p in self._open_positions.values()
             )
 
@@ -533,6 +534,11 @@ class SystemState:
         with self._lock:
             self._balance        = balance
             self._initial_balance = balance
+            self._persist_json()
+
+    def sync_balance(self, balance: float, reason: str = "broker") -> None:
+        with self._lock:
+            self._balance = float(balance)
             self._persist_json()
 
     def adjust_balance(self, delta: float) -> float:

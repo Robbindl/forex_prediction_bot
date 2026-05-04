@@ -397,11 +397,33 @@ class DukascopyLiveDepthBridge:
             "updated_at": _utc_now_iso(),
             "assets": self._latest,
         }
-        tmp = self._store_path.with_name(f"{self._store_path.name}.{os.getpid()}.tmp")
+        payload_text = json.dumps(payload, ensure_ascii=True, separators=(",", ":"))
+        tmp = self._store_path.with_name(
+            f"{self._store_path.name}.{os.getpid()}.{threading.get_ident()}.{time.time_ns()}.tmp"
+        )
+        wrote = False
+        last_error: Optional[BaseException] = None
         try:
             tmp.parent.mkdir(parents=True, exist_ok=True)
-            tmp.write_text(json.dumps(payload, ensure_ascii=True, separators=(",", ":")), encoding="utf-8")
-            tmp.replace(self._store_path)
+            for attempt in range(3):
+                try:
+                    tmp.write_text(payload_text, encoding="utf-8")
+                    tmp.replace(self._store_path)
+                    wrote = True
+                    break
+                except OSError as exc:
+                    last_error = exc
+                    time.sleep(0.05 * (attempt + 1))
+            if not wrote:
+                try:
+                    # Windows can deny atomic replace while another local reader has the file open.
+                    self._store_path.write_text(payload_text, encoding="utf-8")
+                    wrote = True
+                except Exception as exc:
+                    last_error = exc
+            if not wrote:
+                logger.warning(f"[DukascopyDepth] store persist failed: {last_error}")
+                return
             self._last_persist = now
             try:
                 self._last_store_mtime = self._store_path.stat().st_mtime
@@ -409,6 +431,7 @@ class DukascopyLiveDepthBridge:
                 pass
         except Exception as exc:
             logger.warning(f"[DukascopyDepth] store persist failed: {exc}")
+        finally:
             try:
                 if tmp.exists():
                     tmp.unlink()

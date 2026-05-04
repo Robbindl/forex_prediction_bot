@@ -1098,7 +1098,9 @@ async function riskClose(mode){
     if(isCategory) r=await fetchProtectedJson('/api/position/close-bulk',{method:'POST',timeoutMs:15000,body:JSON.stringify({mode:'category',category:mode})});
     else if(mode==='all') r=await fetchProtectedJson('/api/position/close-bulk',{method:'POST',timeoutMs:15000,body:JSON.stringify({mode:'all'})});
     else r=await fetchProtectedJson('/api/position/close-bulk',{method:'POST',timeoutMs:15000,body:JSON.stringify({mode:mode})});
-    alert(r.success?'✅ Closed '+r.closed+' position(s)':'❌ '+(r.error||'Failed'));
+    const closed=Number(r.closed||0), skipped=Number(r.skipped||0);
+    const ok=r.success||closed>0;
+    alert(ok?'✅ '+(r.message||('Closed '+closed+' position(s)'))+(skipped?' · '+skipped+' skipped':''):'❌ '+(r.error||'Failed'));
     setTimeout(function(){window.location.reload();},800);
   }catch(e){alert('❌ Network error');}
 }

@@ -812,6 +812,125 @@ class TelegramCommander:
         reason = str(trade.get("display_exit_reason", trade.get("exit_reason", "the exit logic closed the trade")) or "").strip()
         return f"What actually happened: the trade was closed because {reason.lower()}."
 
+    @classmethod
+    def _broker_execution_snapshot(cls, trade: Dict[str, Any]) -> Dict[str, Any]:
+        metadata = trade.get("metadata", trade.get("trade_metadata", {})) or {}
+        if not isinstance(metadata, dict):
+            metadata = {}
+        broker_execution = metadata.get("broker_execution") if isinstance(metadata.get("broker_execution"), dict) else {}
+        broker_close = metadata.get("broker_close") if isinstance(metadata.get("broker_close"), dict) else {}
+        sizing = broker_execution.get("broker_sizing") if isinstance(broker_execution.get("broker_sizing"), dict) else {}
+
+        broker = str(
+            trade.get("broker")
+            or broker_execution.get("broker")
+            or ""
+        ).strip().lower()
+        execution_mode = str(trade.get("execution_mode") or "").strip()
+        if not broker and execution_mode.lower().startswith("ig"):
+            broker = "ig"
+        if not broker and not execution_mode:
+            return {}
+
+        epic = str(
+            trade.get("broker_symbol")
+            or broker_execution.get("epic")
+            or broker_close.get("epic")
+            or ""
+        ).strip()
+        deal_id = str(
+            trade.get("broker_trade_id")
+            or broker_execution.get("deal_id")
+            or broker_close.get("order_id")
+            or ""
+        ).strip()
+        deal_reference = str(
+            trade.get("broker_deal_reference")
+            or broker_execution.get("deal_reference")
+            or broker_close.get("deal_reference")
+            or ""
+        ).strip()
+        broker_size = (
+            trade.get("broker_position_size")
+            if trade.get("broker_position_size") not in (None, "")
+            else sizing.get("broker_size")
+        )
+        try:
+            broker_size = float(broker_size or 0.0)
+        except Exception:
+            broker_size = 0.0
+        close_status = str(
+            trade.get("broker_close_status")
+            or broker_close.get("status")
+            or broker_close.get("deal_status")
+            or ""
+        ).strip()
+
+        return {
+            "broker": broker or "paper",
+            "execution_mode": execution_mode or str(broker_execution.get("environment") or "").strip(),
+            "epic": epic,
+            "deal_id": deal_id,
+            "deal_reference": deal_reference,
+            "broker_size": broker_size,
+            "close_status": close_status,
+        }
+
+    @classmethod
+    def _format_broker_execution_line(cls, trade: Dict[str, Any], prefix: str = "") -> str:
+        snapshot = cls._broker_execution_snapshot(trade)
+        if not snapshot:
+            return ""
+        broker = str(snapshot.get("broker") or "").upper()
+        mode = str(snapshot.get("execution_mode") or "").replace("_", " ").strip()
+        parts = [f"{prefix}Execution `{broker}`"]
+        if mode and mode.lower() != broker.lower():
+            parts.append(f"Mode `{mode}`")
+        if snapshot.get("epic"):
+            parts.append(f"Epic `{snapshot['epic']}`")
+        if float(snapshot.get("broker_size") or 0.0) > 0:
+            parts.append(f"Broker size `{float(snapshot['broker_size']):.4f}`")
+        if snapshot.get("deal_id"):
+            parts.append(f"Deal `{str(snapshot['deal_id'])[:14]}`")
+        elif snapshot.get("deal_reference"):
+            parts.append(f"Ref `{str(snapshot['deal_reference'])[:14]}`")
+        if snapshot.get("close_status"):
+            parts.append(f"Close `{snapshot['close_status']}`")
+        return " | ".join(parts)
+
+    @classmethod
+    def _close_failure_text(cls, position: Dict[str, Any], result: Optional[Dict[str, Any]] = None) -> str:
+        if isinstance(result, dict) and result.get("error"):
+            return str(result.get("error") or "failed")
+        snapshot = cls._broker_execution_snapshot(position or {})
+        broker = str(snapshot.get("broker") or "").upper()
+        if broker and broker != "PAPER":
+            return f"{broker} close failed; position left open"
+        return "failed"
+
+    @staticmethod
+    def _broker_issue_text(issue: Dict[str, Any]) -> str:
+        reason = " ".join(str(issue.get("reason") or "unknown").split())
+        if len(reason) > 650:
+            reason = reason[:647].rstrip() + "..."
+        return "\n".join(
+            [
+                "Broker execution issue",
+                f"Asset: {issue.get('asset') or '?'}",
+                f"Category: {issue.get('category') or 'unknown'}",
+                f"Stage: {issue.get('stage') or 'unknown'}",
+                f"Mode: {issue.get('execution_mode') or 'unknown'}",
+                f"Bot action: {issue.get('action') or 'skipped/rejected'}",
+                f"Reason: {reason}",
+            ]
+        )
+
+    def alert_broker_issue(self, issue: Dict[str, Any]) -> None:
+        try:
+            self.send_message(self._broker_issue_text(issue or {}), parse_mode=None)
+        except Exception as e:
+            logger.error(f"[Telegram] alert_broker_issue: {e}")
+
     def alert_trade_opened(self, trade: Dict) -> None:
         try:
             d     = trade.get("direction", trade.get("signal", "BUY"))
@@ -827,6 +946,8 @@ class TelegramCommander:
             playbook_text = f"\n🧭 *Entry Context*\n{playbook_block}" if playbook_block else ""
             diagnostics_block = self._format_runtime_diagnostics_block(trade)
             diagnostics_text = f"\n🧪 *Market Context*\n{diagnostics_block}" if diagnostics_block else ""
+            broker_line = self._format_broker_execution_line(trade)
+            broker_text = f"\n{broker_line}" if broker_line else ""
             target_lines = [f"Stop:     `{self._fmt_price(sl, _a)}`"]
             rr_bits: List[str] = []
             for level in target_levels:
@@ -857,6 +978,7 @@ class TelegramCommander:
                 f"{chr(10).join(target_lines)}\n"
                 f"{rr_line}\n"
                 f"Conf:     `{float(trade.get('confidence', 0)):.0%}`\n"
+                f"{broker_text}"
                 f"{playbook_text}"
                 f"{diagnostics_text}\n"
                 f"ID:       `{trade.get('trade_id', '?')}`"
@@ -910,6 +1032,8 @@ class TelegramCommander:
                 pass
             playbook_block = self._format_playbook_runtime_block(trade)
             playbook_text = f"\n🧭 *Entry Context*\n{playbook_block}" if playbook_block else ""
+            broker_line = self._format_broker_execution_line(trade)
+            broker_text = f"\n{broker_line}" if broker_line else ""
             execution_block = self._format_trade_execution_block(trade)
             execution_text = f"\n🏛️ *Execution Review*\n{execution_block}" if execution_block else ""
             review_block = self._format_trade_review_block(trade)
@@ -929,6 +1053,7 @@ class TelegramCommander:
                 f"Entry:  `{self._fmt_price(_en, _a2)}`\n"
                 f"Exit:   `{self._fmt_price(_ex, _a2)}`\n"
                 f"P&L:    `{sign}${pnl:.2f}`"
+                f"{broker_text}"
                 f"{playbook_text}"
                 f"{execution_text}"
                 f"{review_text}"
@@ -2717,6 +2842,8 @@ class TelegramCommander:
             diagnostics_text = f"{diagnostics_block}\n" if diagnostics_block else ""
             playbook_block = self._format_playbook_runtime_block(p, prefix="  ")
             playbook_text = f"{playbook_block}\n" if playbook_block else ""
+            broker_line = self._format_broker_execution_line(p, prefix="  ")
+            broker_text = f"{broker_line}\n" if broker_line else ""
             target_line = self._position_target_text(p, asset, sl, tp)
 
             lines.append(
@@ -2724,6 +2851,7 @@ class TelegramCommander:
                 f"  Entry: `{self._fmt_price(entry, asset)}` → Current: `{self._fmt_price(display_current, asset)}`\n"
                 f"{target_line}"
                 f"  Conf: {conf:.0%} | Size: `{p.get('position_size', 0):.4f}`\n"
+                f"{broker_text}"
                 f"{pnl_str}"
                 f"{open_time_str}"
                 f"{playbook_text}"
@@ -3018,12 +3146,12 @@ class TelegramCommander:
                     results.append(f"⏸ {asset} — market closed (weekend)")
                     continue
                 result = core.close_position_manually(tid)
-                if result and result.get("success"):
+                if result:
                     pnl = result.get("pnl", 0)
                     results.append(f"✅ {asset} closed | P&L: ${pnl:+.2f}")
                     closed += 1
                 else:
-                    results.append(f"❌ {asset} — {result.get('error','failed')}")
+                    results.append(f"❌ {asset} — {self._close_failure_text(p, result)}")
                     errors += 1
             except Exception as e:
                 results.append(f"❌ {asset} — {e}")
@@ -3073,12 +3201,12 @@ class TelegramCommander:
                     results.append(f"⏸ {asset} — market closed")
                     continue
                 result = core.close_position_manually(tid)
-                if result and result.get("success"):
+                if result:
                     actual_pnl = result.get("pnl", pnl)
                     results.append(f"✅ {asset} | P&L: ${actual_pnl:+.2f}")
                     closed += 1
                 else:
-                    results.append(f"❌ {asset} — {result.get('error','failed')}")
+                    results.append(f"❌ {asset} — {self._close_failure_text(p, result)}")
                     errors += 1
             except Exception as e:
                 results.append(f"❌ {asset} — {e}")
@@ -3134,14 +3262,14 @@ class TelegramCommander:
                     results.append(f"⏸ {asset} — market closed")
                     continue
                 result = core.close_position_manually(tid)
-                if result and result.get("success"):
+                if result:
                     pnl = float(result.get("pnl", 0))
                     total_pnl += pnl
                     emoji = "🟢" if pnl >= 0 else "🔴"
                     results.append(f"{emoji} {asset} | ${pnl:+.2f}")
                     closed += 1
                 else:
-                    results.append(f"❌ {asset} — {result.get('error','failed')}")
+                    results.append(f"❌ {asset} — {self._close_failure_text(p, result)}")
                     errors += 1
             except Exception as e:
                 results.append(f"❌ {asset} — {e}")
@@ -3525,19 +3653,28 @@ class TelegramCommander:
                     )
             result = core.close_position_manually(trade_id)
             if not result:
+                if pos:
+                    return (
+                        f"❌ *Close failed*\n\n"
+                        f"{self._close_failure_text(pos)}",
+                        _kb([("◀️ Positions", "positions"), ("🏠 Menu", "menu")])
+                    )
                 return (
                     f"❌ Trade `{trade_id}` not found.",
                     _kb([("◀️ Positions", "positions"), ("🏠 Menu", "menu")])
                 )
             pnl  = float(result.get("pnl", 0))
             icon = "✅" if pnl >= 0 else "❌"
+            broker_line = self._format_broker_execution_line(result)
+            broker_text = f"\n{broker_line}" if broker_line else ""
             return (
                 f"{icon} *Closed*\n\n"
                 f"Asset:   {result.get('asset', trade_id)}\n"
                 f"P&L:     `${pnl:+.2f}`\n"
                 f"Entry:   `{self._fmt_price(float(result.get('entry_price', 0)), result.get('asset', ''))}`\n"
                 f"Exit:    `{self._fmt_price(float(result.get('exit_price', 0)), result.get('asset', ''))}`\n"
-                f"Reason:  {result.get('exit_reason', 'Manual')}",
+                f"Reason:  {result.get('exit_reason', 'Manual')}"
+                f"{broker_text}",
                 _kb([("📈 Positions", "positions"), ("🏠 Menu", "menu")])
             )
         except Exception as e:

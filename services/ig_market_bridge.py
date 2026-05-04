@@ -1,9 +1,12 @@
 from __future__ import annotations
 
 import json
+import os
+import re
 import threading
 import time
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 from typing import Any, Dict, Optional, Tuple
 from urllib.parse import quote as _urlquote
 
@@ -20,6 +23,7 @@ from config.config import (
     IG_PASSWORD,
     IG_ROUTED_ASSETS,
     IG_ROUTED_CATEGORIES,
+    IG_STREAMING_HOLDOFF_SEC,
 )
 from services.market_hours_guard import build_market_status
 from utils.logger import get_logger
@@ -39,14 +43,69 @@ _ACCOUNTS_ENDPOINT = "/accounts"
 _WATCHLISTS_ENDPOINT = "/watchlists"
 _HISTORY_ACTIVITY_ENDPOINT = "/history/activity"
 _CLIENT_SENTIMENT_ENDPOINT = "/clientsentiment/{market_id}"
+
+
+def _env_bool(name: str, default: bool = False) -> bool:
+    text = str(os.getenv(name, "")).strip().lower()
+    if not text:
+        return bool(default)
+    if text in {"1", "true", "yes", "on"}:
+        return True
+    if text in {"0", "false", "no", "off"}:
+        return False
+    return bool(default)
+
+
+def _env_float(name: str, default: float) -> float:
+    try:
+        text = str(os.getenv(name, "")).strip()
+        return float(text) if text else float(default)
+    except Exception:
+        return float(default)
+
+
 _DETAIL_TTL_SEC = 5.0
-_ACCOUNTS_TTL_SEC = 30.0
-_WATCHLISTS_TTL_SEC = 60.0
+_CONTRACT_SPEC_TTL_SEC = max(300.0, _env_float("IG_CONTRACT_SPEC_TTL_SEC", 6 * 60 * 60))
+_MARKET_STATUS_REST_ENABLED = _env_bool("IG_MARKET_STATUS_REST_ENABLED", False)
+_VALIDATE_EPIC_OVERRIDES = _env_bool("IG_VALIDATE_EPIC_OVERRIDES", False)
+_ACCOUNTS_TTL_SEC = max(60.0, _env_float("IG_ACCOUNTS_TTL_SEC", 5 * 60))
+_WATCHLISTS_TTL_SEC = max(300.0, _env_float("IG_WATCHLISTS_TTL_SEC", 60 * 60))
 _CLIENT_SENTIMENT_TTL_SEC = 300.0
-_ACTIVITY_TTL_SEC = 30.0
+_CLIENT_SENTIMENT_REST_ENABLED = _env_bool("IG_CLIENT_SENTIMENT_REST_ENABLED", False)
+_ACTIVITY_TTL_SEC = max(300.0, _env_float("IG_ACTIVITY_TTL_SEC", 10 * 60))
 _MIN_TOKEN_TTL_SEC = 5.0
 _TOKEN_EXPIRY_SKEW_SEC = 15.0
 _STREAMING_SESSION_TTL_SEC = 5 * 60.0
+_PROJECT_ROOT = Path(__file__).resolve().parent.parent
+_REST_ALLOWANCE_HOLDOFF_PATH = _PROJECT_ROOT / "data" / "ig_rest_allowance_holdoff.json"
+_CONTRACT_SPEC_CACHE_PATH = _PROJECT_ROOT / "data" / "ig_contract_specs.json"
+
+_DEFAULT_EPIC_MAP = {
+    "XAU/USD": "CS.D.CFDGOLD.BMU.IP",
+    "XAG/USD": "CS.D.CFDSILVER.BMU.IP",
+    "WTI": "CC.D.CL.BMU.IP",
+    "EUR/USD": "CS.D.EURUSD.MINI.IP",
+    "EUR/JPY": "CS.D.EURJPY.CFD.IP",
+    "EUR/GBP": "CS.D.EURGBP.CFD.IP",
+    "GBP/JPY": "CS.D.GBPJPY.CFD.IP",
+    "GBP/USD": "CS.D.GBPUSD.CFD.IP",
+    "AUD/USD": "CS.D.AUDUSD.CFD.IP",
+    "NZD/USD": "CS.D.NZDUSD.CFD.IP",
+    "USD/JPY": "CS.D.USDJPY.CFD.IP",
+    "USD/CAD": "CS.D.USDCAD.CFD.IP",
+    "USD/CHF": "CS.D.USDCHF.CFD.IP",
+    "US30": "IX.D.DOW.BMU.IP",
+    "US100": "IX.D.NASDAQ.IFMM.IP",
+    "US500": "IX.D.SPTRD.IFMM.IP",
+    "UK100": "IX.D.FTSE.IFM.IP",
+    "GER40": "IX.D.DAX.IFMS.IP",
+    "AUS200": "IX.D.ASX.IFMM.IP",
+    "JPN225": "IX.D.NIKKEI.IFM.IP",
+    "BTC-USD": "CS.D.BITCOIN.CFM.IP",
+    "ETH-USD": "CS.D.ETHUSD.CFD.IP",
+    "SOL-USD": "CS.D.SOLUSD.CFD.IP",
+    "XRP-USD": "CS.D.XRPUSD.CFD.IP",
+}
 
 _SUPPORTED_ASSET_ALIASES = {
     "XAU/USD": "XAU/USD",
@@ -130,6 +189,26 @@ _SUPPORTED_ASSET_ALIASES = {
     "JAPAN225": "JPN225",
     "NIKKEI": "JPN225",
     "NIKKEI225": "JPN225",
+    "BTC-USD": "BTC-USD",
+    "BTCUSD": "BTC-USD",
+    "BTC": "BTC-USD",
+    "BITCOIN": "BTC-USD",
+    "ETH-USD": "ETH-USD",
+    "ETHUSD": "ETH-USD",
+    "ETH": "ETH-USD",
+    "ETHEREUM": "ETH-USD",
+    "BNB-USD": "BNB-USD",
+    "BNBUSD": "BNB-USD",
+    "BNB": "BNB-USD",
+    "BINANCECOIN": "BNB-USD",
+    "SOL-USD": "SOL-USD",
+    "SOLUSD": "SOL-USD",
+    "SOL": "SOL-USD",
+    "SOLANA": "SOL-USD",
+    "XRP-USD": "XRP-USD",
+    "XRPUSD": "XRP-USD",
+    "XRP": "XRP-USD",
+    "RIPPLE": "XRP-USD",
 }
 
 _SEARCH_TERMS = {
@@ -148,11 +227,16 @@ _SEARCH_TERMS = {
     "USD/CHF": ("usd/chf", "usd chf", "us dollar swiss franc"),
     "US30": ("us30", "dow jones", "wall street", "dow"),
     "US100": ("us100", "nasdaq 100", "nasdaq", "ndx"),
-    "US500": ("us500", "s&p 500", "spx", "s&p"),
+    "US500": ("us500", "us 500", "s&p 500", "spx", "s&p"),
     "UK100": ("uk100", "ftse 100", "ftse"),
     "GER40": ("ger40", "germany 40", "dax 40", "dax"),
     "AUS200": ("aus200", "australia 200", "asx 200", "spi 200"),
     "JPN225": ("jpn225", "japan 225", "nikkei 225", "nikkei"),
+    "BTC-USD": ("bitcoin", "btc/usd", "btc usd", "btc"),
+    "ETH-USD": ("ethereum", "eth/usd", "eth usd", "ether"),
+    "BNB-USD": ("bnb", "bnb/usd", "bnb usd", "binance coin"),
+    "SOL-USD": ("solana", "sol/usd", "sol usd"),
+    "XRP-USD": ("ripple", "xrp/usd", "xrp usd", "xrp"),
 }
 
 _ASSET_CATEGORIES = {
@@ -176,11 +260,16 @@ _ASSET_CATEGORIES = {
     "GER40": "indices",
     "AUS200": "indices",
     "JPN225": "indices",
+    "BTC-USD": "crypto",
+    "ETH-USD": "crypto",
+    "BNB-USD": "crypto",
+    "SOL-USD": "crypto",
+    "XRP-USD": "crypto",
 }
 
 _ASSET_INSTRUMENT_TYPE_TOKENS = {
-    "XAU/USD": ("COMMODITIES",),
-    "XAG/USD": ("COMMODITIES",),
+    "XAU/USD": ("COMMODITIES", "CURRENCIES"),
+    "XAG/USD": ("COMMODITIES", "CURRENCIES"),
     "WTI": ("COMMODITIES",),
     "EUR/USD": ("CURRENCIES", "FOREX"),
     "GBP/USD": ("CURRENCIES", "FOREX"),
@@ -199,6 +288,11 @@ _ASSET_INSTRUMENT_TYPE_TOKENS = {
     "GER40": ("INDICES", "INDICE"),
     "AUS200": ("INDICES", "INDICE"),
     "JPN225": ("INDICES", "INDICE"),
+    "BTC-USD": ("CURRENCIES", "CRYPTO"),
+    "ETH-USD": ("CURRENCIES", "CRYPTO"),
+    "BNB-USD": ("CURRENCIES", "CRYPTO"),
+    "SOL-USD": ("CURRENCIES", "CRYPTO"),
+    "XRP-USD": ("CURRENCIES", "CRYPTO"),
 }
 
 _ASSET_MATCH_GROUPS = {
@@ -217,16 +311,21 @@ _ASSET_MATCH_GROUPS = {
     "USD/CHF": (("usd/chf",), ("usd", "chf"), ("us dollar", "swiss franc")),
     "US30": (("us30",), ("dow",), ("dow", "jones"), ("wall", "street")),
     "US100": (("us100",), ("nasdaq",), ("nasdaq", "100"), ("ndx",)),
-    "US500": (("us500",), ("s&p", "500"), ("spx",)),
+    "US500": (("us500",), ("us", "500"), ("s&p", "500"), ("spx",)),
     "UK100": (("uk100",), ("ftse",), ("ftse", "100")),
     "GER40": (("ger40",), ("germany", "40"), ("dax", "40"), ("dax",)),
     "AUS200": (("aus200",), ("australia", "200"), ("asx", "200"), ("spi", "200")),
     "JPN225": (("jpn225",), ("japan", "225"), ("nikkei", "225"), ("nikkei",)),
+    "BTC-USD": (("bitcoin",), ("btc",)),
+    "ETH-USD": (("ethereum",), ("ether",), ("eth",)),
+    "BNB-USD": (("bnb",), ("binance", "coin")),
+    "SOL-USD": (("solana",), ("sol",)),
+    "XRP-USD": (("ripple",), ("xrp",)),
 }
 
 _ASSET_REJECT_TERMS = {
-    "XAU/USD": ("silver", "wti", "crude"),
-    "XAG/USD": ("gold", "wti", "crude"),
+    "XAU/USD": ("silver", "wti", "crude", "india", "in_gold"),
+    "XAG/USD": ("gold", "wti", "crude", "india", "in_silver"),
     "WTI": ("brent",),
     "EUR/USD": ("eur/gbp", "eur/jpy", "gbp/usd", "usd/chf", "usd/jpy", "usd/cad"),
     "GBP/USD": ("gbp/jpy", "eur/gbp", "eur/usd", "usd/cad", "usd/chf"),
@@ -244,6 +343,22 @@ _ASSET_REJECT_TERMS = {
     "GER40": ("ftse", "uk 100", "japan", "nikkei", "australia", "asx", "nasdaq", "dow", "s&p"),
     "AUS200": ("dax", "germany", "japan", "nikkei", "ftse", "uk 100", "nasdaq", "dow", "s&p"),
     "JPN225": ("dax", "germany", "australia", "asx", "ftse", "uk 100", "nasdaq", "dow", "s&p"),
+    "BTC-USD": (
+        "bitcoin cash",
+        "bch",
+        "bchxbt",
+        "ether",
+        "ethereum",
+        "ripple",
+        "xrp",
+        "solana",
+        "bnb",
+        "binance",
+    ),
+    "ETH-USD": ("ethereum classic", "etc", "bitcoin", "btc", "ripple", "xrp", "solana", "bnb", "binance"),
+    "BNB-USD": ("bitcoin", "btc", "ether", "ethereum", "ripple", "xrp", "solana"),
+    "SOL-USD": ("bitcoin", "btc", "ether", "ethereum", "ripple", "xrp", "bnb", "binance"),
+    "XRP-USD": ("bitcoin", "btc", "ether", "ethereum", "solana", "bnb", "binance"),
 }
 
 _RESOLUTION_MAP = {
@@ -295,6 +410,36 @@ def _default_instrument_type(canonical_asset: str) -> str:
 def _matches_required_group(haystack: str, canonical_asset: str) -> bool:
     groups = _ASSET_MATCH_GROUPS.get(canonical_asset) or ()
     return any(all(token in haystack for token in group) for group in groups)
+
+
+def _small_contract_score(item: Dict[str, Any]) -> int:
+    name = str(item.get("instrumentName") or "").lower()
+    expiry = str(item.get("expiry") or "")
+    score = 0
+    if "cash" in name and expiry == "-":
+        score += 4
+    elif expiry == "-":
+        score += 2
+    match = re.search(r"\(\s*[$€£]\s*(\d+(?:\.\d+)?)\s*\)", name)
+    if match:
+        try:
+            value = float(match.group(1))
+        except Exception:
+            value = 0.0
+        if value > 0:
+            if value <= 1:
+                score += 12
+            elif value <= 2:
+                score += 10
+            elif value <= 5:
+                score += 8
+            elif value <= 10:
+                score += 6
+            elif value <= 20:
+                score += 4
+            elif value <= 50:
+                score += 2
+    return score
 
 
 def _configured_routed_assets() -> list[str]:
@@ -390,9 +535,10 @@ class IGMarketBridge:
                 "Content-Type": "application/json",
             }
         )
-        self._epic_overrides = _parse_epic_map(IG_EPIC_MAP)
+        self._epic_overrides = {**_DEFAULT_EPIC_MAP, **_parse_epic_map(IG_EPIC_MAP)}
         self._resolved_symbols: Dict[str, Optional[Dict[str, Any]]] = {}
         self._detail_cache: Dict[str, Tuple[float, Dict[str, Any]]] = {}
+        self._contract_spec_cache: Dict[str, Tuple[float, Dict[str, Any]]] = {}
         self._accounts_cache: Tuple[float, list[Dict[str, Any]]] = (0.0, [])
         self._watchlists_cache: Tuple[float, list[Dict[str, Any]]] = (0.0, [])
         self._activity_cache: Dict[Tuple[int, int], Tuple[float, list[Dict[str, Any]]]] = {}
@@ -408,6 +554,8 @@ class IGMarketBridge:
         self._session_expires_at = 0.0
         self._streaming_session_expires_at = 0.0
         self._missing_credentials_logged = False
+        self._rest_allowance_blocked_until = 0.0
+        self._last_rest_allowance_log = 0.0
 
     def list_profiles(self) -> list[str]:
         return ["ig"] if self._enabled and self._credentials_ready(log_warning=False) else []
@@ -433,7 +581,7 @@ class IGMarketBridge:
                     "delayTime": None,
                     "streamingPricesAvailable": False,
                 }
-                if self._credentials_ready(log_warning=False):
+                if _VALIDATE_EPIC_OVERRIDES and self._credentials_ready(log_warning=False):
                     try:
                         details = self._get_market_details(override)
                         instrument = dict(details.get("instrument") or {})
@@ -464,12 +612,19 @@ class IGMarketBridge:
                         )
                     except Exception as exc:
                         logger.debug(f"[IGBridge] override detail lookup failed for {canonical}: {exc}")
-                resolved = self._build_resolved(
+                override_score = self._candidate_score(canonical, override_payload)
+                if override_score > 0:
+                    resolved = self._build_resolved(
+                        canonical,
+                        override_payload,
+                    )
+                    self._resolved_symbols[cache_key] = resolved
+                    return dict(resolved)
+                logger.warning(
+                    "[IGBridge] Ignoring IG_EPIC_MAP override for %s because %s does not match the asset.",
                     canonical,
-                    override_payload,
+                    override,
                 )
-                self._resolved_symbols[cache_key] = resolved
-                return dict(resolved)
 
             if not self._credentials_ready():
                 self._resolved_symbols[cache_key] = None
@@ -487,6 +642,8 @@ class IGMarketBridge:
                     prev = candidates.get(epic)
                     if prev is None or score > prev[0]:
                         candidates[epic] = (score, item)
+                if candidates:
+                    break
 
             if not candidates:
                 self._resolved_symbols[cache_key] = None
@@ -499,6 +656,140 @@ class IGMarketBridge:
 
     def supports(self, asset: str, category: str = "") -> bool:
         return self._supports_asset(_canonical_asset(asset), category=category)
+
+    def _contract_spec_cache_key(self, canonical: str, category: str = "") -> str:
+        resolved_category = str(category or _asset_category(canonical) or "").strip().lower()
+        return f"{self._environment}:{resolved_category}:{canonical}"
+
+    def _get_cached_contract_spec(
+        self,
+        cache_key: str,
+        *,
+        allow_stale: bool = False,
+    ) -> Optional[Dict[str, Any]]:
+        now_mono = time.monotonic()
+        with self._lock:
+            cached = self._contract_spec_cache.get(cache_key)
+            if cached and (allow_stale or (now_mono - cached[0]) < _CONTRACT_SPEC_TTL_SEC):
+                return dict(cached[1])
+
+        try:
+            if not _CONTRACT_SPEC_CACHE_PATH.exists():
+                return None
+            raw = json.loads(_CONTRACT_SPEC_CACHE_PATH.read_text(encoding="utf-8") or "{}")
+            item = raw.get(cache_key) if isinstance(raw, dict) else None
+            if not isinstance(item, dict):
+                return None
+            payload = item.get("payload")
+            if not isinstance(payload, dict):
+                return None
+            cached_at = float(item.get("cached_at", 0.0) or 0.0)
+            if not allow_stale and (time.time() - cached_at) >= _CONTRACT_SPEC_TTL_SEC:
+                return None
+            with self._lock:
+                self._contract_spec_cache[cache_key] = (time.monotonic(), dict(payload))
+            return dict(payload)
+        except Exception:
+            return None
+
+    def _store_contract_spec_cache(self, cache_key: str, payload: Dict[str, Any]) -> None:
+        if not isinstance(payload, dict) or not payload:
+            return
+        with self._lock:
+            self._contract_spec_cache[cache_key] = (time.monotonic(), dict(payload))
+        try:
+            _CONTRACT_SPEC_CACHE_PATH.parent.mkdir(parents=True, exist_ok=True)
+            existing: Dict[str, Any] = {}
+            if _CONTRACT_SPEC_CACHE_PATH.exists():
+                loaded = json.loads(_CONTRACT_SPEC_CACHE_PATH.read_text(encoding="utf-8") or "{}")
+                if isinstance(loaded, dict):
+                    existing = loaded
+            existing[cache_key] = {
+                "cached_at": time.time(),
+                "payload": dict(payload),
+            }
+            tmp_path = _CONTRACT_SPEC_CACHE_PATH.with_name(
+                f"{_CONTRACT_SPEC_CACHE_PATH.name}.{os.getpid()}.tmp"
+            )
+            tmp_path.write_text(
+                json.dumps(existing, ensure_ascii=True, indent=2, sort_keys=True),
+                encoding="utf-8",
+            )
+            tmp_path.replace(_CONTRACT_SPEC_CACHE_PATH)
+        except Exception as exc:
+            logger.debug(f"[IGBridge] contract spec cache persist failed: {exc}")
+
+    def get_contract_spec(self, asset: str, category: str = "") -> Optional[Dict[str, Any]]:
+        canonical = _canonical_asset(asset)
+        if not self._supports_asset(canonical, category=category):
+            return None
+
+        cache_key = self._contract_spec_cache_key(canonical, category)
+        cached = self._get_cached_contract_spec(cache_key)
+        if cached:
+            return cached
+
+        if self._read_rest_allowance_holdoff_until() > time.time():
+            return self._get_cached_contract_spec(cache_key, allow_stale=True)
+
+        if not self._credentials_ready():
+            return None
+
+        resolved = self.resolve_symbol_info(canonical, category=category)
+        if not resolved:
+            return None
+
+        epic = str(resolved.get("symbol") or "")
+        if not epic:
+            return None
+
+        try:
+            from risk.broker_sizer import BrokerPositionSizer
+            from risk.position_sizer import PositionSizer
+
+            details = self._get_market_details(epic)
+            local_spec = PositionSizer.get_spec(canonical, category or _asset_category(canonical) or "forex")
+            broker_spec = BrokerPositionSizer.spec_from_ig_market_details(
+                asset=canonical,
+                details={**details, "epic": epic},
+                default_point_size=float(local_spec.get("pip", 0.0) or 0.0),
+            )
+            if broker_spec is None:
+                return None
+            payload = broker_spec.__dict__.copy()
+            payload["cash_per_price_unit_per_size"] = broker_spec.cash_per_price_unit_per_size
+            payload["instrument_name"] = str(
+                (details.get("instrument") or {}).get("name")
+                or resolved.get("instrument_name")
+                or canonical
+            )
+            payload["market_status"] = str(
+                (details.get("snapshot") or {}).get("marketStatus")
+                or resolved.get("market_status")
+                or ""
+            )
+            dealing_rules = details.get("dealingRules") if isinstance(details.get("dealingRules"), dict) else {}
+            snapshot = details.get("snapshot") if isinstance(details.get("snapshot"), dict) else {}
+            for source_key, target_key in (
+                ("minNormalStopOrLimitDistance", "min_normal_stop_or_limit_distance"),
+                ("maxStopOrLimitDistance", "max_stop_or_limit_distance"),
+                ("minStepDistance", "min_step_distance"),
+                ("minControlledRiskStopDistance", "min_controlled_risk_stop_distance"),
+            ):
+                rule = dealing_rules.get(source_key) if isinstance(dealing_rules.get(source_key), dict) else {}
+                payload[f"{target_key}_value"] = float(_safe_float(rule.get("value")) or 0.0)
+                payload[f"{target_key}_unit"] = str(rule.get("unit") or "")
+            payload["bid"] = float(_safe_float(snapshot.get("bid")) or 0.0)
+            payload["offer"] = float(_safe_float(snapshot.get("offer")) or 0.0)
+            payload["decimal_places"] = _safe_int(snapshot.get("decimalPlacesFactor"))
+            payload["scaling_factor"] = float(_safe_float(snapshot.get("scalingFactor")) or 0.0)
+            self._store_contract_spec_cache(cache_key, payload)
+            return payload
+        except IGRequestError:
+            raise
+        except Exception as exc:
+            logger.debug(f"[IGBridge] contract spec lookup failed for {canonical}: {exc}")
+            return None
 
     def get_quote(
         self,
@@ -786,6 +1077,8 @@ class IGMarketBridge:
 
     def get_market_status(self, asset: str, category: str = "") -> Optional[Dict[str, Any]]:
         canonical = _canonical_asset(asset)
+        if not _MARKET_STATUS_REST_ENABLED:
+            return None
         if not self._supports_asset(canonical, category=category) or not self._credentials_ready():
             return None
 
@@ -927,6 +1220,69 @@ class IGMarketBridge:
                 "error_message": str(exc),
             }
 
+    def get_account_balance_summary(self) -> Dict[str, Any]:
+        if not self._enabled:
+            return {
+                "enabled": False,
+                "authenticated": False,
+                "provider": "IG",
+                "environment": self._environment,
+            }
+        if not self._credentials_ready(log_warning=False):
+            return {
+                "enabled": True,
+                "authenticated": False,
+                "provider": "IG",
+                "environment": self._environment,
+                "error_code": "missing_credentials",
+                "error_message": "IG_IDENTIFIER and IG_PASSWORD are required for IG account balance.",
+            }
+        try:
+            accounts = self._get_accounts()
+            active = None
+            account_id = str(self._account_id or "")
+            for item in accounts:
+                if str(item.get("accountId") or "") == account_id:
+                    active = item
+                    break
+            if active is None and accounts:
+                active = next((item for item in accounts if bool(item.get("preferred"))), accounts[0])
+            balance = dict((active or {}).get("balance") or {})
+            return {
+                "enabled": True,
+                "authenticated": True,
+                "provider": "IG",
+                "environment": self._environment,
+                "account_id": str((active or {}).get("accountId") or self._account_id or ""),
+                "account_name": str((active or {}).get("accountName") or ""),
+                "account_type": str((active or {}).get("accountType") or ""),
+                "status": str((active or {}).get("status") or ""),
+                "currency": str((active or {}).get("currency") or ""),
+                "preferred": bool((active or {}).get("preferred")),
+                "balance": _safe_float(balance.get("balance")),
+                "available": _safe_float(balance.get("available")),
+                "profit_loss": _safe_float(balance.get("profitLoss")),
+            }
+        except IGRequestError as exc:
+            return {
+                "enabled": True,
+                "authenticated": False,
+                "provider": "IG",
+                "environment": self._environment,
+                "error_code": exc.code,
+                "error_message": exc.message,
+            }
+        except Exception as exc:
+            logger.debug(f"[IGBridge] account balance failed: {exc}")
+            return {
+                "enabled": True,
+                "authenticated": False,
+                "provider": "IG",
+                "environment": self._environment,
+                "error_code": "balance_failed",
+                "error_message": str(exc),
+            }
+
     def get_watchlists(self) -> list[Dict[str, Any]]:
         if not self._enabled or not self._credentials_ready(log_warning=False):
             return []
@@ -994,6 +1350,8 @@ class IGMarketBridge:
         return simplified
 
     def get_client_sentiment(self, asset: str, category: str = "") -> Optional[Dict[str, Any]]:
+        if not _CLIENT_SENTIMENT_REST_ENABLED:
+            return None
         canonical = _canonical_asset(asset)
         if not self._supports_asset(canonical, category=category):
             return None
@@ -1093,10 +1451,7 @@ class IGMarketBridge:
         )
         body = self._parse_json(response)
         if not response.ok:
-            raise IGRequestError(
-                self._extract_error_code(response, body),
-                self._extract_error_message(response, body),
-            )
+            self._raise_response_error(response, body)
 
         cst = str(response.headers.get("CST") or "").strip()
         x_security_token = str(response.headers.get("X-SECURITY-TOKEN") or "").strip()
@@ -1200,6 +1555,7 @@ class IGMarketBridge:
         delay = _safe_int(item.get("delayTime"))
         if delay == 0:
             score += 1
+        score += _small_contract_score(item)
         return score
 
     @staticmethod
@@ -1304,10 +1660,7 @@ class IGMarketBridge:
         )
         body = self._parse_json(response)
         if not response.ok:
-            raise IGRequestError(
-                self._extract_error_code(response, body),
-                self._extract_error_message(response, body),
-            )
+            self._raise_response_error(response, body)
 
         self._apply_oauth_payload_locked(body)
 
@@ -1327,10 +1680,7 @@ class IGMarketBridge:
         )
         body = self._parse_json(response)
         if not response.ok:
-            raise IGRequestError(
-                self._extract_error_code(response, body),
-                self._extract_error_message(response, body),
-            )
+            self._raise_response_error(response, body)
 
         self._apply_oauth_payload_locked(body, keep_account=True)
 
@@ -1378,21 +1728,88 @@ class IGMarketBridge:
         if clear_refresh:
             self._refresh_token = ""
 
+    @staticmethod
+    def _is_allowance_error(code: Any, message: Any = "") -> bool:
+        text = f"{code} {message}".lower()
+        return "exceeded-api-key-allowance" in text or "allowance" in text
+
+    def _raise_response_error(self, response: requests.Response, body: Dict[str, Any]) -> None:
+        error_code = self._extract_error_code(response, body)
+        error_message = self._extract_error_message(response, body)
+        if self._is_allowance_error(error_code, error_message):
+            self._enter_rest_allowance_holdoff(error_message or error_code)
+        raise IGRequestError(error_code, error_message)
+
+    def _read_rest_allowance_holdoff_until(self) -> float:
+        until = float(self._rest_allowance_blocked_until or 0.0)
+        try:
+            if _REST_ALLOWANCE_HOLDOFF_PATH.exists():
+                payload = json.loads(_REST_ALLOWANCE_HOLDOFF_PATH.read_text(encoding="utf-8") or "{}")
+                until = max(until, float(payload.get("blocked_until", 0.0) or 0.0))
+        except Exception:
+            pass
+        self._rest_allowance_blocked_until = until
+        return until
+
+    def _enter_rest_allowance_holdoff(self, reason: str = "") -> None:
+        seconds = max(60, int(IG_STREAMING_HOLDOFF_SEC or 300))
+        until = time.time() + seconds
+        self._rest_allowance_blocked_until = max(float(self._rest_allowance_blocked_until or 0.0), until)
+        try:
+            _REST_ALLOWANCE_HOLDOFF_PATH.parent.mkdir(parents=True, exist_ok=True)
+            _REST_ALLOWANCE_HOLDOFF_PATH.write_text(
+                json.dumps(
+                    {
+                        "blocked_until": self._rest_allowance_blocked_until,
+                        "reason": str(reason or "allowance"),
+                        "updated_at": _utc_now_iso(),
+                    },
+                    ensure_ascii=True,
+                    separators=(",", ":"),
+                ),
+                encoding="utf-8",
+            )
+        except Exception:
+            pass
+        now = time.time()
+        if now - float(self._last_rest_allowance_log or 0.0) >= 30.0:
+            self._last_rest_allowance_log = now
+            logger.warning(
+                "[IGBridge] IG REST suspended for %ss due to allowance limits: %s",
+                seconds,
+                reason or "allowance",
+            )
+
+    def _raise_if_rest_allowance_blocked(self) -> None:
+        until = self._read_rest_allowance_holdoff_until()
+        remaining = until - time.time()
+        if remaining <= 0:
+            return
+        raise IGRequestError(
+            "error.public-api.exceeded-api-key-allowance",
+            f"IG REST temporarily suspended for {int(remaining)}s due to recent allowance limits.",
+        )
+
     def _request(
         self,
         method: str,
         path: str,
         *,
         params: Optional[Dict[str, Any]] = None,
+        json_body: Optional[Dict[str, Any]] = None,
         version: str = "1",
         allow_retry: bool = True,
+        extra_headers: Optional[Dict[str, str]] = None,
     ) -> Dict[str, Any]:
+        self._raise_if_rest_allowance_blocked()
         self._ensure_session()
         headers = {
             "X-IG-API-KEY": self._api_key,
             "Version": str(version),
             "Authorization": f"{self._token_type or 'Bearer'} {self._access_token}",
         }
+        if extra_headers:
+            headers.update({str(k): str(v) for k, v in extra_headers.items()})
         if self._account_id:
             headers["IG-ACCOUNT-ID"] = self._account_id
 
@@ -1400,6 +1817,7 @@ class IGMarketBridge:
             method=method.upper(),
             url=f"{self._base_url}{path}",
             params=params,
+            json=json_body,
             headers=headers,
             timeout=15,
         )
@@ -1408,12 +1826,17 @@ class IGMarketBridge:
             with self._lock:
                 self._clear_oauth_tokens_locked(clear_refresh=False)
             self._ensure_session()
-            return self._request(method, path, params=params, version=version, allow_retry=False)
-        if not response.ok:
-            raise IGRequestError(
-                self._extract_error_code(response, body),
-                self._extract_error_message(response, body),
+            return self._request(
+                method,
+                path,
+                params=params,
+                json_body=json_body,
+                version=version,
+                allow_retry=False,
+                extra_headers=extra_headers,
             )
+        if not response.ok:
+            self._raise_response_error(response, body)
         return body
 
     @staticmethod

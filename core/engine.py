@@ -15,6 +15,8 @@ import pandas as pd
 from config.config import (
     INACTIVITY_RELIEF_FULL_HOURS,
     INACTIVITY_RELIEF_START_HOURS,
+    EXECUTION_MODE,
+    IG_EXECUTION_ENABLED,
     MAX_SIGNAL_CONFIDENCE,
     MIN_FINAL_CONFIDENCE,
     PLAYBOOK_ONLY_RUNTIME,
@@ -204,6 +206,9 @@ class TradingCore:
         self._portfolio_risk: Optional[Any] = None
         self._last_ranked_opportunities: List[Dict[str, Any]] = []
         self._last_ranked_at_utc: str = ""
+        self._last_broker_balance_sync = 0.0
+        self._last_broker_balance_snapshot: Dict[str, Any] = {}
+        self._broker_issue_alerts: Dict[str, float] = {}
 
         logger.info(f"[TradingCore] Init — balance=${balance} strategy={strategy_mode}")
 
@@ -252,6 +257,7 @@ class TradingCore:
         return self.state.get_closed_positions(limit=limit)
 
     def get_balance(self) -> float:
+        self._sync_broker_account_balance()
         return self.state.balance
 
     def get_performance(self) -> Dict:
@@ -2004,13 +2010,17 @@ class TradingCore:
         return survivors[:max_count]
 
     def _execute_ranked_survivors(self, survivors: List[Signal], limit: int = 3) -> int:
-        selected_survivors = self._select_execution_survivors(survivors, limit=limit)
+        selected_survivors = self._filter_broker_supported_survivors(
+            self._select_execution_survivors(survivors, limit=limit)
+        )
         if selected_survivors:
             selection_summary = ", ".join(
                 f"{sig.asset}({sig.category})#{sig.metadata.get('opportunity_rank', '?')}"
                 for sig in selected_survivors
             )
             logger.info(f"[TradingCore] Execution selection: {selection_summary}")
+        elif survivors:
+            logger.info("[TradingCore] No accepted signals could be sent to the active broker right now")
         processed = 0
         for sig in selected_survivors:
             if self._stop_event.is_set():
@@ -2026,6 +2036,8 @@ class TradingCore:
         return processed
 
     def _trading_cycle(self) -> None:
+        self._sync_broker_account_balance()
+
         # Day rollover — reset risk guard to today's opening balance (Issue 6)
         rolled = self.state.check_day_rollover()
         if rolled and self._risk_manager:
@@ -2082,7 +2094,99 @@ class TradingCore:
         except Exception as exc:
             logger.debug(f"[TradingCore] Opportunity ranking failed: {exc}")
             self._remember_ranked_opportunities(accepted_pairs)
-            return accepted_pairs
+        return accepted_pairs
+
+    def _filter_broker_supported_survivors(self, survivors: List[Signal]) -> List[Signal]:
+        router = getattr(self, "exchange_router", None)
+        if router is None:
+            return survivors
+        filtered: List[Signal] = []
+        for sig in survivors:
+            payload = {
+                "asset": sig.asset,
+                "symbol": sig.asset,
+                "category": sig.category,
+            }
+            try:
+                supported, reason = router.check_support(payload)
+            except Exception as exc:
+                supported, reason = False, str(exc)
+            if supported:
+                filtered.append(sig)
+                continue
+            reason_text = str(reason or "")
+            if reason_text.startswith("broker_temporarily_unavailable"):
+                logger.warning(
+                    f"[TradingCore] Deferring {sig.asset}: active broker temporarily unavailable"
+                    + (f" ({reason_text})" if reason_text else "")
+                )
+                self._notify_broker_issue(
+                    sig.asset,
+                    sig.category,
+                    reason_text,
+                    stage="broker support check",
+                    action="deferred until broker API recovers; other assets continue",
+                )
+            else:
+                logger.warning(
+                    f"[TradingCore] Skipping {sig.asset}: active broker cannot execute it"
+                    + (f" ({reason_text})" if reason_text else "")
+                )
+                self._notify_broker_issue(
+                    sig.asset,
+                    sig.category,
+                    reason_text,
+                    stage="broker support check",
+                    action="skipped this asset for this scan; other assets continue",
+                )
+        return filtered
+
+    @staticmethod
+    def _broker_balance_enabled() -> bool:
+        mode = str(EXECUTION_MODE or "paper").lower()
+        return bool(IG_EXECUTION_ENABLED or mode in {"ig", "ig_demo", "ig_live"})
+
+    def _sync_broker_account_balance(self, *, force: bool = False) -> None:
+        if not self._broker_balance_enabled():
+            return
+        now = time.monotonic()
+        if not force and now - float(self._last_broker_balance_sync or 0.0) < 30.0:
+            return
+        self._last_broker_balance_sync = now
+        try:
+            from services.market_data_router import get_broker_account_balance_summary
+
+            summary = dict(get_broker_account_balance_summary() or {})
+            self._last_broker_balance_snapshot = summary
+            if not summary.get("authenticated"):
+                return
+            balance = summary.get("balance")
+            if balance is None:
+                return
+            broker_balance = float(balance)
+            if broker_balance <= 0:
+                return
+            current = float(self.state.balance or 0.0)
+            if abs(current - broker_balance) < 0.01:
+                return
+            sync_fn = getattr(self.state, "sync_balance", None)
+            if callable(sync_fn):
+                sync_fn(broker_balance, "ig_account")
+            else:
+                self.state.adjust_balance(broker_balance - current)
+            if self._risk_manager is not None:
+                self._risk_manager.update_balance(broker_balance)
+            if self._paper_trader is not None:
+                try:
+                    self._paper_trader.account_balance = broker_balance
+                except Exception:
+                    pass
+            logger.info(
+                f"[TradingCore] Synced IG {summary.get('environment', 'demo')} balance "
+                f"{summary.get('currency') or ''} {broker_balance:,.2f}"
+            )
+        except Exception as exc:
+            logger.debug(f"[TradingCore] Broker balance sync skipped: {exc}")
 
     def _classify_signal_candidates(
         self,
@@ -2092,7 +2196,7 @@ class TradingCore:
         tradable_candidates: List[Tuple[str, str]] = []
         market_block_counts: Counter[str] = Counter()
         cooling_count = 0
-        open_position_count = 0
+        open_position_count = self.state.open_position_count()
         addon_candidate_count = 0
         for canonical, category in asset_list:
             if self.state.is_cooling_down(canonical):
@@ -2100,7 +2204,6 @@ class TradingCore:
                 continue
             if self.state.has_open_position_for(canonical):
                 if not self._winner_addon_scan_allowed(canonical):
-                    open_position_count += 1
                     continue
                 addon_candidate_count += 1
             base_candidates.append((canonical, category))
@@ -2391,6 +2494,15 @@ class TradingCore:
                     signal_dict["position_size"] = round(base_size * size_fraction, 6)
             except Exception as _addon_err:
                 logger.debug(f"[TradingCore] Winner add-on sizing error for {signal.asset}: {_addon_err}")
+        try:
+            from risk.broker_sizer import BrokerPositionSizer
+
+            signal_dict = BrokerPositionSizer.annotate_local(
+                signal_dict,
+                account_balance=self.state.balance,
+            )
+        except Exception as _broker_size_err:
+            logger.debug(f"[TradingCore] Broker-neutral sizing metadata error for {signal.asset}: {_broker_size_err}")
         return signal_dict
 
     def _apply_universal_order_flow_gate(
@@ -2493,6 +2605,21 @@ class TradingCore:
 
         self._notify_telegram_open(trade)
 
+    def _ensure_router_paper_adapter(self, router: Any) -> None:
+        if self._paper_trader is None or router is None:
+            return
+        try:
+            has_adapter = getattr(router, "has_adapter", None)
+            if callable(has_adapter) and has_adapter("paper"):
+                return
+            if not callable(has_adapter) and "paper" in getattr(router, "_adapters", {}):
+                return
+            from execution.paper_adapter import PaperAdapter
+
+            router.register("paper", PaperAdapter(self._paper_trader))
+        except Exception as exc:
+            logger.debug(f"[TradingCore] Router paper adapter attach failed: {exc}")
+
     def _execute_signal(self, signal: Signal) -> bool:
         if not self._within_position_caps(signal):
             return False
@@ -2517,6 +2644,30 @@ class TradingCore:
         self._copy_signal_features(signal)
 
         try:
+            router = getattr(self, "exchange_router", None)
+            if router is not None:
+                self._ensure_router_paper_adapter(router)
+                result = router.submit(signal_dict)
+                if result and result.status == "FILLED":
+                    trade = result.raw.get("trade") if isinstance(result.raw, dict) else None
+                    if not isinstance(trade, dict):
+                        trade = result.raw if isinstance(result.raw, dict) else {}
+                    if trade:
+                        self._publish_open_trade(signal, trade)
+                        return True
+                    logger.error(f"[TradingCore] Router filled {signal.asset} without a trade payload")
+                    return False
+                if result:
+                    logger.warning(f"[TradingCore] Router rejected {signal.asset}: {result.error or result.status}")
+                    self._notify_broker_issue(
+                        signal.asset,
+                        signal.category,
+                        str(result.error or result.status or ""),
+                        stage="order submission",
+                        action="order was not opened; signal remains rejected",
+                    )
+                return False
+
             trade = self._paper_trader.execute_signal(signal_dict)
             if trade:
                 self._publish_open_trade(signal, trade)
@@ -4805,6 +4956,116 @@ class TradingCore:
             logger.debug(f"[TradingCore] Cross-asset context unavailable for {asset}: {exc}")
             ctx["cross_asset_context"] = {}
 
+    @staticmethod
+    def _clean_broker_issue_reason(reason: Any, limit: int = 650) -> str:
+        text = " ".join(str(reason or "unknown broker issue").split())
+        if len(text) <= limit:
+            return text
+        return text[: max(0, limit - 3)].rstrip() + "..."
+
+    @staticmethod
+    def _broker_issue_bucket(reason: Any) -> str:
+        text = str(reason or "").lower()
+        if not text.strip():
+            return "unknown"
+        checks = (
+            ("rate_limit", ("exceeded-api-key-allowance", "allowance limits", "rate limit", "temporarily suspended")),
+            ("permission_denied", ("broker_permission_denied", "unauthorised", "unauthorized", "no access")),
+            ("missing_epic", ("epic not found", "epic not configured")),
+            ("missing_contract_spec", ("contract spec missing",)),
+            ("size_rejected", ("below_broker_min_size", "size rejected")),
+            ("attached_order_error", ("attached_order_level_error",)),
+            ("temporary_unavailable", ("broker_temporarily_unavailable", "temporarily unavailable")),
+            ("confirm_pending", ("ig_confirm_pending", "confirm pending", "_confirm_pending")),
+            ("market_closed", ("market closed", "market not open")),
+            ("dry_run", ("dry-run", "dry run")),
+            ("unknown_rejection", ("ig rejected order: unknown", " rejected order: unknown")),
+        )
+        for bucket, needles in checks:
+            if any(needle in text for needle in needles):
+                return bucket
+        return "broker_rejection"
+
+    @staticmethod
+    def _broker_issue_is_expected_noise(bucket: str, reason: Any) -> bool:
+        text = str(reason or "").lower()
+        if bucket == "market_closed":
+            return True
+        if "closed on deriv" in text or "weekend closed" in text or "pre-market" in text:
+            return True
+        return False
+
+    @staticmethod
+    def _broker_issue_alert_ttl(bucket: str) -> float:
+        if bucket in {"rate_limit", "temporary_unavailable", "confirm_pending"}:
+            return 15.0 * 60.0
+        return 6.0 * 60.0 * 60.0
+
+    @staticmethod
+    def _format_broker_issue_alert(issue: Dict[str, Any]) -> str:
+        lines = [
+            "Broker execution issue",
+            f"Asset: {issue.get('asset') or '?'}",
+            f"Category: {issue.get('category') or 'unknown'}",
+            f"Stage: {issue.get('stage') or 'unknown'}",
+            f"Mode: {issue.get('execution_mode') or EXECUTION_MODE or 'unknown'}",
+            f"Bot action: {issue.get('action') or 'skipped/rejected'}",
+            f"Reason: {issue.get('reason') or 'unknown'}",
+        ]
+        return "\n".join(lines)
+
+    def _notify_broker_issue(
+        self,
+        asset: Any,
+        category: Any,
+        reason: Any,
+        *,
+        stage: str,
+        action: str,
+    ) -> None:
+        if not self.telegram:
+            return
+        reason_text = self._clean_broker_issue_reason(reason)
+        bucket = self._broker_issue_bucket(reason_text)
+        if self._broker_issue_is_expected_noise(bucket, reason_text):
+            return
+
+        asset_key = str(asset or "?").upper()
+        broker_scope_buckets = {"rate_limit", "temporary_unavailable", "confirm_pending"}
+        alert_scope = "BROKER" if bucket in broker_scope_buckets else asset_key
+        alert_key = f"{alert_scope}:{bucket}"
+        now = time.monotonic()
+        ttl = self._broker_issue_alert_ttl(bucket)
+        last = float(self._broker_issue_alerts.get(alert_key) or 0.0)
+        if last and now - last < ttl:
+            return
+        self._broker_issue_alerts[alert_key] = now
+        if len(self._broker_issue_alerts) > 500:
+            cutoff = now - 24.0 * 60.0 * 60.0
+            self._broker_issue_alerts = {
+                key: value
+                for key, value in self._broker_issue_alerts.items()
+                if float(value or 0.0) >= cutoff
+            }
+
+        issue = {
+            "asset": str(asset or "?"),
+            "category": str(category or "unknown"),
+            "stage": stage,
+            "action": action,
+            "reason": reason_text,
+            "bucket": bucket,
+            "execution_mode": str(EXECUTION_MODE or "unknown"),
+        }
+        try:
+            target = getattr(self.telegram, "bot", self.telegram)
+            if hasattr(target, "alert_broker_issue"):
+                target.alert_broker_issue(issue)
+            elif hasattr(target, "send_message"):
+                target.send_message(self._format_broker_issue_alert(issue), parse_mode=None)
+        except Exception as e:
+            logger.debug(f"[TradingCore] Broker issue Telegram alert failed: {e}")
+
     def _notify_telegram_open(self, trade: Dict) -> None:
         if not self.telegram:
             return
@@ -5497,13 +5758,59 @@ class TradingCore:
         direction = pos.get("direction", pos.get("signal", "BUY"))
         size = float(pos.get("position_size", 0))
         exit_price, pnl = self._manual_close_exit_price(pos, entry, size, direction)
+        broker_name = str(pos.get("broker") or pos.get("execution_mode") or "").lower()
+        broker_result = None
+        if broker_name.startswith("ig") or broker_name == "ig":
+            router = getattr(self, "exchange_router", None)
+            if router is None or not hasattr(router, "close_position"):
+                logger.error(f"[TradingCore] Cannot close IG position {trade_id}: exchange router unavailable")
+                return None
+            broker_result = router.close_position(pos, reason=reason)
+            if not broker_result or broker_result.status != "FILLED":
+                logger.error(
+                    f"[TradingCore] Broker close failed {trade_id}: "
+                    f"{getattr(broker_result, 'error', 'no result')}"
+                )
+                return None
+            if broker_result.avg_price and broker_result.avg_price > 0:
+                exit_price = float(broker_result.avg_price)
+                pnl = self._manual_close_pnl(pos, entry, exit_price, size, direction)
+
+        close_updates = self._manual_close_exit_updates(pos, entry, exit_price)
+        if broker_result is not None:
+            broker_close_meta = {
+                "broker": str(pos.get("broker") or "ig"),
+                "status": str(getattr(broker_result, "status", "") or ""),
+                "order_id": str(getattr(broker_result, "order_id", "") or ""),
+                "avg_price": float(getattr(broker_result, "avg_price", 0.0) or 0.0),
+                "filled_qty": float(getattr(broker_result, "filled_qty", 0.0) or 0.0),
+                "reason": reason,
+            }
+            raw = getattr(broker_result, "raw", None)
+            if isinstance(raw, dict):
+                request = raw.get("request") if isinstance(raw.get("request"), dict) else {}
+                confirm = raw.get("confirm") if isinstance(raw.get("confirm"), dict) else {}
+                if request.get("epic"):
+                    broker_close_meta["epic"] = request.get("epic")
+                if confirm.get("dealStatus"):
+                    broker_close_meta["deal_status"] = confirm.get("dealStatus")
+                if confirm.get("reason"):
+                    broker_close_meta["confirm_reason"] = confirm.get("reason")
+                if confirm.get("dealReference") or request.get("dealReference"):
+                    broker_close_meta["deal_reference"] = confirm.get("dealReference") or request.get("dealReference")
+            close_meta = dict(close_updates.get("metadata") or {})
+            close_meta["broker_close"] = broker_close_meta
+            close_updates["metadata"] = close_meta
+            close_updates["broker_close_status"] = broker_close_meta.get("status", "")
+            close_updates["broker_close_order_id"] = broker_close_meta.get("order_id", "")
+            close_updates["broker_close_avg_price"] = broker_close_meta.get("avg_price", 0.0)
 
         closed = self.state.close_position(
             trade_id,
             exit_price,
             reason,
             pnl,
-            extra_updates=self._manual_close_exit_updates(pos, entry, exit_price),
+            extra_updates=close_updates,
         )
         if not closed:
             return None

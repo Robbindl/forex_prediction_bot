@@ -262,6 +262,18 @@ def get_broker_account_summary() -> Dict[str, Any]:
     return {}
 
 
+def get_broker_account_balance_summary() -> Dict[str, Any]:
+    try:
+        from services.ig_market_bridge import ig_market_bridge
+
+        summary = ig_market_bridge.get_account_balance_summary()
+        if isinstance(summary, dict):
+            return dict(summary)
+    except Exception:
+        pass
+    return {}
+
+
 def get_client_sentiment(asset: str, category: str = "") -> Optional[Dict[str, Any]]:
     resolved_category = str(category or get_profile(asset).category or "").strip().lower()
     # Only use IG client-positioning for assets that are actually routed to IG.

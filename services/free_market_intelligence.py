@@ -10,6 +10,7 @@ from typing import Any, Dict, List, Optional
 
 import pandas as pd
 import requests
+from requests.adapters import HTTPAdapter
 
 from config.config import (
     CFTC_ENABLED,
@@ -109,8 +110,13 @@ class FreeMarketIntelligence:
     def __init__(self) -> None:
         self._cache: Dict[str, _CacheEntry] = {}
         self._lock = threading.Lock()
+        self._fred_cache: Dict[str, _CacheEntry] = {}
+        self._fred_lock = threading.Lock()
         self._frame_cache: Dict[str, _CacheEntry] = {}
         self._session = requests.Session()
+        adapter = HTTPAdapter(pool_connections=16, pool_maxsize=32)
+        self._session.mount("https://", adapter)
+        self._session.mount("http://", adapter)
         self._session.headers.update({"User-Agent": "Robbie-TradingBot/1.0"})
 
     def get_asset_context(self, asset: str, category: str, as_of: Any = None) -> Dict[str, Any]:
@@ -263,8 +269,26 @@ class FreeMarketIntelligence:
     def _fred_latest_change(self, series_id: str, as_of: Optional[datetime] = None) -> Optional[Dict[str, float]]:
         if not FRED_API_KEY or not series_id:
             return None
+        observation_end = (as_of or datetime.now(timezone.utc)).strftime("%Y-%m-%d")
+        cache_key = f"fred:{series_id}:{observation_end}"
+        now = time.time()
+        with self._fred_lock:
+            hit = self._fred_cache.get(cache_key)
+            if hit and now < hit.expires_at:
+                return dict(hit.payload) if hit.payload else None
+            try:
+                result = self._fetch_fred_latest_change(series_id, observation_end)
+            except Exception as exc:
+                logger.debug(f"[FreeIntel] FRED {series_id}: {exc}")
+                result = None
+            self._fred_cache[cache_key] = _CacheEntry(
+                payload=dict(result or {}),
+                expires_at=now + max(300, min(3600, FREE_INTEL_CACHE_SECONDS)),
+            )
+            return dict(result) if result else None
+
+    def _fetch_fred_latest_change(self, series_id: str, observation_end: str) -> Optional[Dict[str, float]]:
         try:
-            observation_end = (as_of or datetime.now(timezone.utc)).strftime("%Y-%m-%d")
             response = self._session.get(
                 _FRED_URL,
                 params={

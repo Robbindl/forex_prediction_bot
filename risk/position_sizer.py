@@ -1,19 +1,27 @@
 from __future__ import annotations
 import math
+import os
 from utils.logger import get_logger
 
 logger = get_logger()
 
+
+def _env_float(name: str, default: float) -> float:
+    try:
+        return float(os.getenv(name, str(default)))
+    except Exception:
+        return float(default)
+
 MIN_CONF = 0.62   # minimum confidence to trade
 BASE_CONF = 0.70  # neutral confidence — base lots should hold here
 MAX_CONF = 0.90   # confidence at which lot size doubles
-REFERENCE_BALANCE = 10_000.0
+REFERENCE_BALANCE = max(1.0, _env_float("SIZING_REFERENCE_BALANCE", 10_000.0))
 DEFAULT_MIN_LOT = 0.01
 DEFAULT_LOT_STEP = 0.01
-GOLD_STANDARD_LOTS = 0.10
+GOLD_STANDARD_LOTS = max(0.000001, _env_float("SIZING_REFERENCE_GOLD_LOTS", 0.10))
 GOLD_STANDARD_ASSET = "XAU/USD"
-GOLD_REFERENCE_PRICE = 2300.0
-GOLD_REFERENCE_MOVE_PCT = 0.0100
+GOLD_REFERENCE_PRICE = max(1.0, _env_float("SIZING_REFERENCE_GOLD_PRICE", 2300.0))
+GOLD_REFERENCE_MOVE_PCT = max(0.000001, _env_float("SIZING_REFERENCE_GOLD_MOVE_PCT", 0.0100))
 
 # ── Broker-style symbol specs ────────────────────────────────────────────────
 # contract  = coins/units/contracts per 1 standard lot
@@ -227,6 +235,53 @@ class PositionSizer:
         if contract <= 0:
             return 0.0
         return round(float(size or 0.0) / contract, 6)
+
+    @classmethod
+    def cash_per_pip(cls, asset: str, category: str, size: float) -> float:
+        spec = cls.get_spec(asset, category)
+        lots = cls.lots_from_size(asset, category, size)
+        return round(float(lots) * float(spec.get("pip_val", 0.0) or 0.0), 8)
+
+    @classmethod
+    def cash_per_price_unit(cls, asset: str, category: str, size: float) -> float:
+        spec = cls.get_spec(asset, category)
+        pip = float(spec.get("pip", 0.0) or 0.0)
+        if pip <= 0:
+            return 0.0
+        return round(cls.cash_per_pip(asset, category, size) / pip, 8)
+
+    @classmethod
+    def size_from_cash_per_price_unit(
+        cls,
+        asset: str,
+        category: str,
+        cash_per_price_unit: float,
+    ) -> float:
+        spec = cls.get_spec(asset, category)
+        pip = float(spec.get("pip", 0.0) or 0.0)
+        pip_val = float(spec.get("pip_val", 0.0) or 0.0)
+        contract = float(spec.get("contract", 1.0) or 1.0)
+        if pip <= 0 or pip_val <= 0 or contract <= 0:
+            return 0.0
+        lots = float(cash_per_price_unit or 0.0) / (pip_val / pip)
+        return round(lots * contract, 8)
+
+    @classmethod
+    def cash_profile(cls, asset: str, category: str, size: float) -> dict:
+        spec = cls.get_spec(asset, category)
+        lots = cls.lots_from_size(asset, category, size)
+        return {
+            "asset": asset,
+            "category": category,
+            "size": round(float(size or 0.0), 8),
+            "lots": round(float(lots or 0.0), 8),
+            "contract": float(spec.get("contract", 1.0) or 1.0),
+            "pip_size": float(spec.get("pip", 0.0) or 0.0),
+            "pip_value_per_lot": float(spec.get("pip_val", 0.0) or 0.0),
+            "cash_per_pip": cls.cash_per_pip(asset, category, size),
+            "cash_per_price_unit": cls.cash_per_price_unit(asset, category, size),
+            "reference_balance": REFERENCE_BALANCE,
+        }
 
     @classmethod
     def reference_lots(cls, asset: str, category: str, entry_price: float) -> float:

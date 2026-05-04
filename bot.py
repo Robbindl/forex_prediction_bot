@@ -682,12 +682,37 @@ def _start_pre_bot_services(engine, args) -> None:
         engine.portfolio_risk = portfolio_risk
 
     def _start_exchange_router():
+        from config.config import (
+            EXECUTION_MODE,
+            IG_EXECUTION_ENABLED,
+            IG_EXECUTION_ROUTE_ASSETS,
+            IG_EXECUTION_ROUTE_CATEGORIES,
+        )
         from execution.exchange_router import ExchangeRouter
         from execution.paper_adapter import PaperAdapter
         router = ExchangeRouter()
         if hasattr(engine, "_paper_trader") and engine._paper_trader:
             router.register("paper", PaperAdapter(engine._paper_trader))
+        mode = str(EXECUTION_MODE or "paper").lower()
+        if IG_EXECUTION_ENABLED or mode in {"ig", "ig_demo", "ig_live"}:
+            from execution.ig_adapter import IGAdapter
+
+            router.register("ig", IGAdapter())
+            route_categories = (
+                IG_EXECUTION_ROUTE_CATEGORIES
+                or (["forex", "crypto", "commodities", "indices"] if mode in {"ig", "ig_demo", "ig_live"} else [])
+            )
+            for category in route_categories:
+                router.set_route(category, "ig")
+            for asset in IG_EXECUTION_ROUTE_ASSETS:
+                router.set_asset_route(asset, "ig")
         engine.exchange_router = router
+        try:
+            sync_balance = getattr(engine, "_sync_broker_account_balance", None)
+            if callable(sync_balance):
+                sync_balance(force=True)
+        except Exception as exc:
+            logger.debug(f"[bot] Broker balance sync skipped: {exc}")
 
     def _upgrade_redis_cache():
         from config.config import CACHE_TTL, REDIS_OBJECT_CACHE_ENABLED
@@ -746,7 +771,7 @@ def _start_pre_bot_services(engine, args) -> None:
     _run_optional_step(_start_portfolio_risk, "[bot] PortfolioRiskEngine attached", "[bot] PortfolioRiskEngine failed: {error}")
     _run_optional_step(
         _start_exchange_router,
-        "[bot] ExchangeRouter ready — paper adapter registered",
+        "[bot] ExchangeRouter ready",
         "[bot] ExchangeRouter failed: {error}",
     )
 

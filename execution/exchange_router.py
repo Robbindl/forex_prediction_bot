@@ -27,15 +27,24 @@ class ExchangeRouter:
     def __init__(self):
         self._adapters: Dict[str, ExchangeAdapter] = {}
         self._routing:  Dict[str, str]             = dict(_DEFAULT_ROUTING)
+        self._asset_routing: Dict[str, str]         = {}
 
     def register(self, name: str, adapter: ExchangeAdapter) -> None:
         self._adapters[name] = adapter
         logger.info(f"[Router] Registered exchange adapter: {name}")
 
+    def has_adapter(self, name: str) -> bool:
+        return str(name or "") in self._adapters
+
     def set_route(self, category: str, adapter_name: str) -> None:
         """Override routing for a category. E.g. route crypto to Binance."""
         self._routing[category] = adapter_name
         logger.info(f"[Router] Route {category} → {adapter_name}")
+
+    def set_asset_route(self, asset: str, adapter_name: str) -> None:
+        """Override routing for one canonical asset."""
+        self._asset_routing[str(asset or "").upper()] = adapter_name
+        logger.info(f"[Router] Route asset {asset} → {adapter_name}")
 
     def submit(self, signal: dict) -> Optional[OrderResult]:
         """
@@ -43,7 +52,7 @@ class ExchangeRouter:
         Retries on transient failure with exponential backoff.
         """
         category = signal.get("category", "crypto")
-        adapter  = self._get_adapter(category)
+        adapter  = self._get_adapter(category, asset=signal.get("asset", ""))
         if adapter is None:
             logger.error(f"[Router] No adapter for category: {category}")
             return None
@@ -52,22 +61,31 @@ class ExchangeRouter:
             logger.warning(f"[Router] Adapter {adapter.name} unavailable (circuit open)")
             return None
 
+        local_quantity = float(signal.get("position_size", 0) or 0)
+        broker_quantity = signal.get("broker_position_size")
+        quantity = float(broker_quantity if broker_quantity is not None else local_quantity)
+        symbol = str(signal.get("broker_symbol") or signal.get("asset", ""))
+        metadata = dict(signal.get("metadata") if isinstance(signal.get("metadata"), dict) else {})
+        metadata.setdefault("confidence", signal.get("confidence"))
+        metadata.setdefault("strategy_id", signal.get("strategy_id"))
+        metadata.setdefault("take_profit_levels", signal.get("take_profit_levels", []))
         req = OrderRequest(
-            symbol      = signal.get("asset", ""),
+            symbol      = symbol,
             side        = (signal.get("direction") or signal.get("signal", "BUY")).upper(),
-            quantity    = float(signal.get("position_size", 0)),
+            quantity    = quantity,
+            asset       = str(signal.get("asset", "")),
+            category    = str(category or ""),
+            local_quantity = local_quantity,
+            broker_quantity = float(broker_quantity) if broker_quantity is not None else None,
             order_type  = signal.get("order_type", "MARKET"),
             price       = signal.get("entry_price"),
             stop_loss   = signal.get("stop_loss"),
             take_profit = signal.get("take_profit"),
+            metadata    = metadata,
         )
 
+        result = None
         for attempt in range(1, _MAX_RETRIES + 1):
-            # FIX HIGH: result is now initialised before the loop body.
-            # Previously, if adapter.place_order() raised an exception on
-            # every attempt (never reaching the assignment), `return result`
-            # after the loop referenced an undefined variable → UnboundLocalError.
-            result = None
             try:
                 result = adapter.place_order(req)
             except Exception as exc:
@@ -80,10 +98,17 @@ class ExchangeRouter:
                 continue
 
             if result.status == "FILLED":
+                raw = result.raw if isinstance(result.raw, dict) else {}
+                broker_sizing = raw.get("broker_sizing") if isinstance(raw.get("broker_sizing"), dict) else {}
+                broker_size = broker_sizing.get("broker_size")
+                broker_part = f" broker_size={broker_size}" if broker_size not in (None, "") else ""
                 logger.info(
                     f"[Router] {adapter.name} filled {req.side} {req.symbol} "
-                    f"qty={result.filled_qty} @ {result.avg_price}"
+                    f"local_qty={result.filled_qty}{broker_part} @ {result.avg_price}"
                 )
+                return result
+            if result.status == "FAILED" and self._is_no_retry_error(result.error):
+                logger.warning(f"[Router] No-retry broker error for {req.symbol}: {result.error}")
                 return result
             if result.status == "FAILED" and self._is_permanent_error(result.error):
                 logger.error(f"[Router] Permanent error for {req.symbol}: {result.error}")
@@ -100,8 +125,47 @@ class ExchangeRouter:
         # result is guaranteed to be set (None if all attempts raised, else last OrderResult)
         return result
 
-    def _get_adapter(self, category: str) -> Optional[ExchangeAdapter]:
-        name = self._routing.get(category, "paper")
+    def close_position(self, position: dict, *, reason: str = "Manual Close") -> Optional[OrderResult]:
+        category = str(position.get("category") or "forex")
+        asset = str(position.get("asset") or "")
+        broker_name = str(position.get("broker") or "").lower()
+        adapter = self._adapters.get(broker_name) if broker_name else None
+        if adapter is None:
+            adapter = self._get_adapter(category, asset=asset)
+        if adapter is None:
+            logger.error(f"[Router] No close adapter for {asset or category}")
+            return None
+        close_fn = getattr(adapter, "close_position", None)
+        if not callable(close_fn):
+            return OrderResult(order_id="", status="FAILED", error=f"{adapter.name} does not support broker close")
+        try:
+            return close_fn(position, reason=reason)
+        except Exception as exc:
+            logger.error(f"[Router] Close failed for {asset}: {exc}")
+            return OrderResult(order_id="", status="FAILED", error=str(exc))
+
+    def check_support(self, signal: dict) -> tuple[bool, str]:
+        category = str(signal.get("category") or "crypto")
+        asset = str(signal.get("asset") or signal.get("symbol") or "")
+        adapter = self._get_adapter(category, asset=asset)
+        if adapter is None:
+            return False, f"no adapter for {asset or category}"
+        supports_fn = getattr(adapter, "supports_asset", None)
+        if not callable(supports_fn):
+            return True, ""
+        try:
+            return supports_fn(asset, category)
+        except Exception as exc:
+            return False, str(exc)
+
+    def get_balance(self, category: str = "forex", asset: str = "", currency: str = "USD") -> float:
+        adapter = self._get_adapter(category, asset=asset)
+        if adapter is None:
+            return 0.0
+        return float(adapter.get_balance(currency) or 0.0)
+
+    def _get_adapter(self, category: str, asset: str = "") -> Optional[ExchangeAdapter]:
+        name = self._asset_routing.get(str(asset or "").upper()) or self._routing.get(category, "paper")
         adapter = self._adapters.get(name)
         if adapter is None:
             logger.warning(f"[Router] Adapter '{name}' not registered — trying 'paper'")
@@ -109,6 +173,20 @@ class ExchangeRouter:
         return adapter
 
     # FIX: Add this missing static method
+    @staticmethod
+    def _is_no_retry_error(error: str) -> bool:
+        if not error:
+            return False
+        error_lower = error.lower()
+        return any(
+            phrase in error_lower
+            for phrase in (
+                "broker_temporarily_unavailable",
+                "exceeded-api-key-allowance",
+                "ig_confirm_pending",
+            )
+        )
+
     @staticmethod
     def _is_permanent_error(error: str) -> bool:
         """Check if an error is permanent (no point retrying)."""
@@ -123,6 +201,18 @@ class ExchangeRouter:
             "account suspended",
             "invalid api key",
             "permission denied",
-            "market closed"
+            "broker_permission_denied",
+            "unauthorised access",
+            "unauthorized access",
+            "no access to the relevant exchange",
+            "apiuser has no access",
+            "market closed",
+            "below_broker_min_size",
+            "broker_min_size",
+            "dry-run",
+            "read-only",
+            "epic not found",
+            "contract spec missing",
+            "attached_order_level_error",
         ]
         return any(phrase in error_lower for phrase in permanent_phrases)

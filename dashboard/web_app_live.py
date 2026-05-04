@@ -4542,6 +4542,56 @@ def _dashboard_live_quote_fallback(asset: str, category: str) -> tuple[Optional[
         return None, ""
 
 
+def _extract_broker_execution_fields(position: Dict[str, Any]) -> Dict[str, Any]:
+    metadata = position.get("metadata") if isinstance(position.get("metadata"), dict) else {}
+    broker_execution = metadata.get("broker_execution") if isinstance(metadata.get("broker_execution"), dict) else {}
+    broker_close = metadata.get("broker_close") if isinstance(metadata.get("broker_close"), dict) else {}
+    broker_sizing = broker_execution.get("broker_sizing") if isinstance(broker_execution.get("broker_sizing"), dict) else {}
+
+    broker = str(position.get("broker") or broker_execution.get("broker") or "").strip().lower()
+    execution_mode = str(position.get("execution_mode") or "").strip()
+    if not broker and execution_mode.lower().startswith("ig"):
+        broker = "ig"
+
+    broker_size = position.get("broker_position_size")
+    if broker_size in (None, ""):
+        broker_size = broker_sizing.get("broker_size")
+    try:
+        broker_size = float(broker_size or 0.0)
+    except Exception:
+        broker_size = 0.0
+
+    return {
+        "broker": broker or "paper",
+        "execution_mode": execution_mode or str(broker_execution.get("environment") or "").strip(),
+        "broker_symbol": str(
+            position.get("broker_symbol")
+            or broker_execution.get("epic")
+            or broker_close.get("epic")
+            or ""
+        ),
+        "broker_position_size": broker_size,
+        "broker_trade_id": str(
+            position.get("broker_trade_id")
+            or broker_execution.get("deal_id")
+            or broker_close.get("order_id")
+            or ""
+        ),
+        "broker_deal_reference": str(
+            position.get("broker_deal_reference")
+            or broker_execution.get("deal_reference")
+            or broker_close.get("deal_reference")
+            or ""
+        ),
+        "broker_close_status": str(
+            position.get("broker_close_status")
+            or broker_close.get("status")
+            or broker_close.get("deal_status")
+            or ""
+        ),
+    }
+
+
 def _build_command_center_enriched_positions(
     positions: Any,
     live_snapshots: Optional[Dict[str, Dict[str, Any]]] = None,
@@ -4597,6 +4647,7 @@ def _build_command_center_enriched_positions(
             "price_source": str(quote.get("price_source", "") or ""),
             "price_age_seconds": quote.get("price_age_seconds"),
             "price_live": bool(quote.get("price_live")),
+            **_extract_broker_execution_fields(position),
             **_extract_entry_structure_fields(metadata),
             **_extract_execution_feedback_fields(metadata),
             **_extract_memory_fields(metadata),
@@ -4869,6 +4920,32 @@ def _authoritative_account_summary(core: Any = None, positions: Any = None) -> D
     summary["closed_trades"] = int(summary.get("closed_trades", len(closed_trades or [])) or 0)
     summary["total_trades"] = int(summary.get("total_trades", summary["closed_trades"]) or 0)
     summary["daily_trades"] = int(summary.get("daily_trades", 0) or 0)
+    try:
+        from config.config import EXECUTION_MODE, IG_EXECUTION_ENABLED
+
+        mode = str(EXECUTION_MODE or "paper").lower()
+        if IG_EXECUTION_ENABLED or mode in {"ig", "ig_demo", "ig_live"}:
+            ig_account = _collect_ig_broker_snapshot()
+            if ig_account.get("authenticated") and ig_account.get("balance") is not None:
+                broker_balance = float(ig_account.get("balance") or 0.0)
+                if broker_balance > 0:
+                    summary["balance"] = round(broker_balance, 2)
+                    summary["realized_balance"] = round(broker_balance, 2)
+                    summary["balance_source"] = f"ig_{ig_account.get('environment') or mode}"
+                    summary["broker_account"] = {
+                        "broker": "ig",
+                        "environment": ig_account.get("environment"),
+                        "account_id": ig_account.get("account_id"),
+                        "currency": ig_account.get("currency"),
+                        "balance": broker_balance,
+                        "available": ig_account.get("available"),
+                        "profit_loss": ig_account.get("profit_loss"),
+                    }
+                    live_balance = broker_balance
+    except Exception:
+        pass
+    summary["account_state"] = "loss" if summary["balance_delta"] < -0.005 else "gain" if summary["balance_delta"] > 0.005 else "flat"
+    summary["balance_delta"] = round(float(summary.get("balance", live_balance) or live_balance) - initial_balance, 2)
     summary["account_state"] = "loss" if summary["balance_delta"] < -0.005 else "gain" if summary["balance_delta"] > 0.005 else "flat"
     return summary
 
@@ -4936,6 +5013,7 @@ def _build_live_book_payload() -> Dict[str, Any]:
                 "price_source": str(quote.get("price_source", "") or ""),
                 "price_age_seconds": quote.get("price_age_seconds"),
                 "price_live": bool(quote.get("price_live")),
+                **_extract_broker_execution_fields(position),
             }
         )
 
@@ -8505,10 +8583,36 @@ def api_close_position():
         core = _core()
         if not core:
             return jsonify({"success": False, "error": "Engine unavailable"}), 503
-        result = core.close_position_manually(trade_id)
+        positions = core.state.get_open_positions() if hasattr(getattr(core, "state", None), "get_open_positions") else core.get_positions()
+        position = next((pos for pos in list(positions or []) if str(pos.get("trade_id") or "") == str(trade_id)), None)
+        broker_fields = _extract_broker_execution_fields(position or {})
+        result = core.close_position_manually(trade_id, reason="Dashboard Manual Close")
         _invalidate_cache_prefixes("risk_portfolio", "closed_trades:", "trade_history:", "strategy_performance:", "page_overview:command_center:", "page_overview:risk_dashboard:")
-        return jsonify({"success": bool(result), "trade_id": trade_id,
-                        "message": "Position closed"})
+        if not result:
+            if position is None:
+                error = "Trade not found"
+            elif str(broker_fields.get("broker") or "").lower() != "paper":
+                error = f"{str(broker_fields.get('broker') or 'broker').upper()} close failed; local position left open"
+            else:
+                error = "Position close failed"
+            return jsonify({
+                "success": False,
+                "trade_id": trade_id,
+                "error": error,
+                **broker_fields,
+            })
+        result_broker_fields = _extract_broker_execution_fields(result)
+        broker_label = str(result_broker_fields.get("broker") or "paper").upper()
+        message = f"{broker_label} position closed" if broker_label != "PAPER" else "Position closed"
+        return jsonify({
+            "success": True,
+            "trade_id": trade_id,
+            "message": message,
+            "asset": result.get("asset"),
+            "pnl": result.get("pnl"),
+            "exit_price": result.get("exit_price"),
+            **result_broker_fields,
+        })
     except Exception as e:
         return jsonify({"success": False, "error": str(e)}), 500
 
@@ -8540,16 +8644,40 @@ def api_close_bulk():
             if mode == "winning"  and pnl <= 0:
                 continue
             try:
-                core.close_position_manually(tid)
-                closed.append(tid)
-            except Exception:
-                skipped.append(tid)
+                result = core.close_position_manually(tid, reason="Dashboard Bulk Close")
+                if result:
+                    closed.append({
+                        "trade_id": tid,
+                        "asset": result.get("asset", pos.get("asset")),
+                        "pnl": result.get("pnl"),
+                        **_extract_broker_execution_fields(result),
+                    })
+                else:
+                    skipped.append({
+                        "trade_id": tid,
+                        "asset": pos.get("asset"),
+                        "error": "broker close failed; local position left open" if str(pos.get("broker") or "").lower() != "paper" else "close failed",
+                        **_extract_broker_execution_fields(pos),
+                    })
+            except Exception as exc:
+                skipped.append({
+                    "trade_id": tid,
+                    "asset": pos.get("asset"),
+                    "error": str(exc),
+                    **_extract_broker_execution_fields(pos),
+                })
         _invalidate_cache_prefixes("risk_portfolio", "closed_trades:", "trade_history:", "strategy_performance:", "page_overview:command_center:", "page_overview:risk_dashboard:")
+        close_count = len(closed)
+        skip_count = len(skipped)
         return jsonify({
-            "success": True,
-            "closed":  len(closed),
-            "skipped": len(skipped),
+            "success": skip_count == 0,
+            "partial_success": close_count > 0 and skip_count > 0,
+            "closed":  close_count,
+            "skipped": skip_count,
+            "closed_positions": closed,
+            "skipped_positions": skipped,
             "mode":    mode,
+            "message": f"Closed {close_count} position(s), skipped {skip_count}",
         })
     except Exception as e:
         return jsonify({"success": False, "error": str(e)}), 500
