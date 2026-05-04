@@ -135,6 +135,8 @@ def _ig_actual_cash_per_price_unit_per_size(position: Dict[str, Any], asset: str
         return 1.0
     if canonical in {"XAG/USD", "SI=F", "WTI", "WTI/USD", "CL=F"}:
         return 100.0
+    if canonical in {"BTC-USD", "BTC/USD", "BTCUSD"}:
+        return 0.1
     metadata = _nested_dict(position, "metadata")
     broker_execution = _nested_dict(metadata, "broker_execution")
     broker_sizing = _nested_dict(broker_execution, "broker_sizing")

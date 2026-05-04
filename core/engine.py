@@ -217,6 +217,9 @@ class TradingCore:
         self._started_monotonic = time.monotonic()
         self._last_execution_monotonic = 0.0
         self._last_startup_guard_log = 0.0
+        self._broker_portfolio_cooldown_until = 0.0
+        self._last_broker_portfolio_guard_log = 0.0
+        self._broker_portfolio_flatten_active = False
         self._dashboard_command_listener_started = False
         self._dashboard_command_thread: Optional[threading.Thread] = None
 
@@ -2470,6 +2473,158 @@ class TradingCore:
             f"{pos.get('asset')} size={partial_size:.6f} pnl={partial_pnl:.2f}"
         )
 
+    @staticmethod
+    def _broker_portfolio_guard_enabled() -> bool:
+        return str(os.getenv("BROKER_PORTFOLIO_EMERGENCY_FLATTEN_ENABLED", "true")).strip().lower() in {
+            "1",
+            "true",
+            "yes",
+            "on",
+        }
+
+    def _broker_position_floating_pnl(
+        self,
+        pos: Dict[str, Any],
+        prices: Dict[str, float],
+    ) -> float:
+        try:
+            from services.live_position_pricing import resolve_live_position_snapshot
+
+            asset = str(pos.get("asset") or "")
+            live_price = prices.get(asset)
+            live_snapshot = (
+                {"price": live_price, "source": "trading_core", "age_seconds": 0.0}
+                if live_price not in (None, 0, 0.0)
+                else None
+            )
+            quote = resolve_live_position_snapshot(
+                pos,
+                live_snapshot=live_snapshot,
+                live_snapshot_max_age_seconds=999999.0,
+                provider_fallback=None,
+            )
+            return float(quote.get("pnl", 0.0) or 0.0)
+        except Exception:
+            try:
+                asset = str(pos.get("asset") or "")
+                direction = str(pos.get("direction") or pos.get("signal") or "BUY").upper()
+                entry = self._normalize_position_price(pos, pos.get("entry_price"))
+                current = self._broker_position_live_price(pos, prices)
+                size = self._float_or_zero(pos.get("position_size"))
+                return self._manual_close_pnl(pos, entry, current, size, direction)
+            except Exception:
+                return self._float_or_zero(pos.get("pnl"))
+
+    def _broker_portfolio_guard_snapshot(self, prices: Dict[str, float]) -> Dict[str, Any]:
+        broker_positions: List[Dict[str, Any]] = []
+        for raw_pos in list(self.state.get_open_positions() or []):
+            if not self._is_broker_managed_position(raw_pos):
+                continue
+            pos = self._normalize_broker_position_prices(raw_pos)
+            pos["pnl"] = round(self._broker_position_floating_pnl(pos, prices), 2)
+            broker_positions.append(pos)
+
+        total_pnl = round(sum(self._float_or_zero(pos.get("pnl")) for pos in broker_positions), 2)
+        losing = [pos for pos in broker_positions if self._float_or_zero(pos.get("pnl")) < 0.0]
+        balance = max(0.0, self._float_or_zero(getattr(self.state, "balance", 0.0) or self.balance))
+        threshold_pct = max(0.1, self._env_float("BROKER_PORTFOLIO_MAX_FLOATING_LOSS_PCT", 1.5))
+        loss_limit = round(balance * (threshold_pct / 100.0), 2)
+        return {
+            "positions": broker_positions,
+            "total_pnl": total_pnl,
+            "losing_count": len(losing),
+            "open_count": len(broker_positions),
+            "balance": balance,
+            "threshold_pct": threshold_pct,
+            "loss_limit": loss_limit,
+            "triggered": bool(
+                broker_positions
+                and len(losing) >= max(1, self._env_int("BROKER_PORTFOLIO_MIN_LOSING_POSITIONS", 3))
+                and total_pnl <= -abs(loss_limit)
+            ),
+        }
+
+    def _set_broker_portfolio_cooldown(self, minutes: float, reason: str) -> None:
+        seconds = max(0.0, float(minutes or 0.0) * 60.0)
+        self._broker_portfolio_cooldown_until = max(
+            float(self._broker_portfolio_cooldown_until or 0.0),
+            time.monotonic() + seconds,
+        )
+        cooldown_minutes = max(1, int(round(float(minutes or 0.0))))
+        try:
+            for asset, _category in self.registry.all_assets():
+                self.state.set_cooldown(self.registry.canonical(asset), cooldown_minutes)
+        except Exception as exc:
+            logger.debug(f"[TradingCore] Broker portfolio cooldown propagation failed: {exc}")
+        logger.warning(f"[TradingCore] Broker portfolio cooldown {cooldown_minutes}m active: {reason}")
+
+    def _trigger_broker_portfolio_emergency_flatten(self, snapshot: Dict[str, Any]) -> bool:
+        if self._broker_portfolio_flatten_active:
+            return False
+        positions = list(snapshot.get("positions") or [])
+        if not positions:
+            return False
+        self._broker_portfolio_flatten_active = True
+        cooldown_minutes = max(1.0, self._env_float("BROKER_PORTFOLIO_COOLDOWN_MINUTES", 60.0))
+        reason = (
+            f"IG Portfolio Emergency Flatten: floating P/L "
+            f"{float(snapshot.get('total_pnl', 0.0) or 0.0):.2f} breached "
+            f"-{float(snapshot.get('loss_limit', 0.0) or 0.0):.2f} "
+            f"({float(snapshot.get('threshold_pct', 0.0) or 0.0):.2f}%) "
+            f"with {int(snapshot.get('losing_count', 0) or 0)} losing positions"
+        )
+        logger.error(f"[TradingCore] {reason}")
+        closed = 0
+        skipped = 0
+        try:
+            for pos in positions:
+                trade_id = str(pos.get("trade_id") or "")
+                if not trade_id:
+                    skipped += 1
+                    continue
+                result = self.close_position_manually(trade_id, reason=reason)
+                if result:
+                    closed += 1
+                else:
+                    skipped += 1
+            self._set_broker_portfolio_cooldown(cooldown_minutes, reason)
+            self._notify_broker_issue(
+                "PORTFOLIO",
+                "broker",
+                reason,
+                stage="broker portfolio emergency flatten",
+                action=f"closed={closed} skipped={skipped}; new broker entries paused for {int(cooldown_minutes)}m",
+            )
+            logger.error(
+                f"[TradingCore] Broker emergency flatten completed: "
+                f"closed={closed} skipped={skipped}"
+            )
+            return closed > 0
+        finally:
+            self._broker_portfolio_flatten_active = False
+
+    def _enforce_broker_portfolio_guard(self, prices: Dict[str, float]) -> bool:
+        if not self._broker_balance_enabled() or not self._broker_portfolio_guard_enabled():
+            return False
+        snapshot = self._broker_portfolio_guard_snapshot(prices)
+        if not snapshot.get("positions"):
+            return False
+
+        now = time.monotonic()
+        if now - float(self._last_broker_portfolio_guard_log or 0.0) >= 30.0:
+            self._last_broker_portfolio_guard_log = now
+            logger.info(
+                "[TradingCore] Broker portfolio guard: "
+                f"open={snapshot['open_count']} losing={snapshot['losing_count']} "
+                f"floating={snapshot['total_pnl']:.2f} "
+                f"limit=-{snapshot['loss_limit']:.2f} "
+                f"pct={snapshot['threshold_pct']:.2f}"
+            )
+
+        if not snapshot.get("triggered"):
+            return False
+        return self._trigger_broker_portfolio_emergency_flatten(snapshot)
+
     def _manage_broker_position_exits(self, prices: Dict[str, float]) -> None:
         router = getattr(self, "exchange_router", None)
         if router is None:
@@ -2630,6 +2785,8 @@ class TradingCore:
             prices = self._get_prices()
             self._repair_broker_position_price_scales()
             self._reconcile_broker_positions()
+            if self._enforce_broker_portfolio_guard(prices):
+                return
             self._manage_broker_position_exits(prices)
             self._paper_trader.update_positions(prices)
             try:
@@ -2777,6 +2934,14 @@ class TradingCore:
             return ""
         return f"broker entry spacing active for {int(round(spacing - elapsed))}s"
 
+    def _broker_portfolio_cooldown_block_reason(self) -> str:
+        if not self._broker_balance_enabled():
+            return ""
+        remaining = float(self._broker_portfolio_cooldown_until or 0.0) - time.monotonic()
+        if remaining <= 0:
+            return ""
+        return f"broker portfolio emergency cooldown active for {int(round(remaining))}s"
+
     def _broker_execution_quality_block_reason(self, signal: Signal) -> str:
         if not self._broker_balance_enabled():
             return ""
@@ -2835,6 +3000,11 @@ class TradingCore:
         spacing_reason = self._broker_entry_spacing_block_reason()
         if spacing_reason:
             logger.info(f"[TradingCore] Broker execution paused: {spacing_reason}")
+            return 0
+
+        cooldown_reason = self._broker_portfolio_cooldown_block_reason()
+        if cooldown_reason:
+            logger.warning(f"[TradingCore] Broker execution paused: {cooldown_reason}")
             return 0
 
         quality_pool = self._filter_broker_execution_quality(survivors)
