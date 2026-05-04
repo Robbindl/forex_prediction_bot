@@ -8,12 +8,22 @@ import os
 import threading
 import time
 from collections import Counter
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any, Callable, Dict, List, Optional, Tuple, Type, cast
 
 import pandas as pd
 
+try:
+    from zoneinfo import ZoneInfo
+except Exception:  # pragma: no cover - Python always has zoneinfo in prod, fallback is defensive.
+    ZoneInfo = None
+
 from config.config import (
+    BROKER_DAILY_GUARD_ENABLED,
+    BROKER_DAILY_GUARD_FLATTEN_ON_PROFIT_TARGET,
+    BROKER_DAILY_GUARD_TIMEZONE,
+    BROKER_DAILY_MAX_LOSS_PCT,
+    BROKER_DAILY_PROFIT_TARGET_PCT,
     BROKER_MAX_EXECUTION_CONFLICTS,
     BROKER_MAX_NEW_TRADES_PER_CYCLE,
     BROKER_MAX_OPEN_POSITIONS,
@@ -239,6 +249,8 @@ class TradingCore:
         self._broker_portfolio_cooldown_until = 0.0
         self._last_broker_portfolio_guard_log = 0.0
         self._broker_portfolio_flatten_active = False
+        self._last_broker_daily_guard_log = 0.0
+        self._broker_daily_guard_flatten_active = False
         self._broker_stop_amend_attempts: Dict[str, float] = {}
         self._dashboard_command_listener_started = False
         self._dashboard_command_thread: Optional[threading.Thread] = None
@@ -2656,6 +2668,180 @@ class TradingCore:
         return self._trigger_broker_portfolio_emergency_flatten(snapshot)
 
     @staticmethod
+    def _broker_daily_guard_enabled() -> bool:
+        return bool(BROKER_DAILY_GUARD_ENABLED)
+
+    @staticmethod
+    def _broker_daily_guard_timezone():
+        name = (
+            os.getenv("BROKER_DAILY_GUARD_TIMEZONE", str(BROKER_DAILY_GUARD_TIMEZONE or "Africa/Nairobi")).strip()
+            or "Africa/Nairobi"
+        )
+        if ZoneInfo is not None:
+            try:
+                return ZoneInfo(name)
+            except Exception:
+                pass
+        return timezone(timedelta(hours=3), "EAT")
+
+    @classmethod
+    def _broker_daily_guard_next_reset(cls) -> datetime:
+        tz = cls._broker_daily_guard_timezone()
+        now = datetime.now(tz)
+        return datetime(now.year, now.month, now.day, tzinfo=tz) + timedelta(days=1)
+
+    @staticmethod
+    def _broker_daily_guard_status_label(status: str) -> str:
+        return "daily loss limit" if status == "loss_limit" else "daily profit target"
+
+    def _broker_daily_guard_snapshot(self, prices: Dict[str, float]) -> Dict[str, Any]:
+        broker_positions: List[Dict[str, Any]] = []
+        for raw_pos in list(self.state.get_open_positions() or []):
+            if not self._is_broker_managed_position(raw_pos):
+                continue
+            pos = self._normalize_broker_position_prices(raw_pos)
+            pos["pnl"] = round(self._broker_position_floating_pnl(pos, prices), 2)
+            broker_positions.append(pos)
+
+        floating_pnl = round(sum(self._float_or_zero(pos.get("pnl")) for pos in broker_positions), 2)
+        realized_pnl = round(self._float_or_zero(getattr(self.state, "daily_pnl", 0.0)), 2)
+        daily_pnl = round(realized_pnl + floating_pnl, 2)
+        balance = max(0.0, self._float_or_zero(getattr(self.state, "balance", 0.0) or self.balance))
+        day_start_balance = self._float_or_zero(getattr(self.state, "daily_start_balance", 0.0))
+        if day_start_balance <= 0:
+            day_start_balance = balance - realized_pnl
+        day_start_balance = max(1.0, day_start_balance)
+        loss_pct = max(
+            0.1,
+            self._env_float("BROKER_DAILY_MAX_LOSS_PCT", float(BROKER_DAILY_MAX_LOSS_PCT)),
+        )
+        profit_pct = max(
+            0.1,
+            self._env_float(
+                "BROKER_DAILY_PROFIT_TARGET_PCT",
+                float(BROKER_DAILY_PROFIT_TARGET_PCT),
+            ),
+        )
+        loss_limit = round(day_start_balance * (loss_pct / 100.0), 2)
+        profit_target = round(day_start_balance * (profit_pct / 100.0), 2)
+        status = ""
+        if daily_pnl <= -abs(loss_limit):
+            status = "loss_limit"
+        elif daily_pnl >= abs(profit_target):
+            status = "profit_target"
+
+        reset_at = self._broker_daily_guard_next_reset()
+        return {
+            "positions": broker_positions,
+            "open_count": len(broker_positions),
+            "losing_count": len([pos for pos in broker_positions if self._float_or_zero(pos.get("pnl")) < 0.0]),
+            "balance": round(balance, 2),
+            "day_start_balance": round(day_start_balance, 2),
+            "realized_pnl": realized_pnl,
+            "floating_pnl": floating_pnl,
+            "daily_pnl": daily_pnl,
+            "loss_pct": loss_pct,
+            "profit_pct": profit_pct,
+            "loss_limit": loss_limit,
+            "profit_target": profit_target,
+            "status": status,
+            "triggered": bool(status),
+            "reset_at": reset_at,
+            "reset_at_eat": reset_at.strftime("%Y-%m-%d %H:%M EAT"),
+        }
+
+    def _broker_daily_guard_reason(self, snapshot: Dict[str, Any]) -> str:
+        status = str(snapshot.get("status") or "")
+        if status == "loss_limit":
+            return (
+                "IG Daily Loss Guard: daily P/L "
+                f"{float(snapshot.get('daily_pnl', 0.0) or 0.0):.2f} breached "
+                f"-{float(snapshot.get('loss_limit', 0.0) or 0.0):.2f} "
+                f"({float(snapshot.get('loss_pct', 0.0) or 0.0):.2f}%) "
+                f"until {snapshot.get('reset_at_eat')}"
+            )
+        return (
+            "IG Daily Profit Target: daily P/L "
+            f"{float(snapshot.get('daily_pnl', 0.0) or 0.0):.2f} reached "
+            f"{float(snapshot.get('profit_target', 0.0) or 0.0):.2f} "
+            f"({float(snapshot.get('profit_pct', 0.0) or 0.0):.2f}%) "
+            f"until {snapshot.get('reset_at_eat')}"
+        )
+
+    def _trigger_broker_daily_guard_flatten(self, snapshot: Dict[str, Any]) -> bool:
+        if self._broker_daily_guard_flatten_active:
+            return False
+        positions = list(snapshot.get("positions") or [])
+        status = str(snapshot.get("status") or "")
+        if not status:
+            return False
+        flatten_profit = self._env_bool(
+            "BROKER_DAILY_GUARD_FLATTEN_ON_PROFIT_TARGET",
+            bool(BROKER_DAILY_GUARD_FLATTEN_ON_PROFIT_TARGET),
+        )
+        should_flatten = bool(positions) and (status == "loss_limit" or flatten_profit)
+        reason = self._broker_daily_guard_reason(snapshot)
+        if not should_flatten:
+            logger.warning(f"[TradingCore] {reason}; new broker entries paused until reset")
+            return False
+
+        self._broker_daily_guard_flatten_active = True
+        logger.error(f"[TradingCore] {reason}")
+        closed = 0
+        skipped = 0
+        try:
+            for pos in positions:
+                trade_id = str(pos.get("trade_id") or "")
+                if not trade_id:
+                    skipped += 1
+                    continue
+                result = self.close_position_manually(trade_id, reason=reason)
+                if result:
+                    closed += 1
+                else:
+                    skipped += 1
+            self._notify_broker_issue(
+                "DAILY",
+                "broker",
+                reason,
+                stage="broker daily guard",
+                action=(
+                    f"closed={closed} skipped={skipped}; new broker entries paused until "
+                    f"{snapshot.get('reset_at_eat')}"
+                ),
+            )
+            logger.error(
+                f"[TradingCore] Broker daily guard completed: "
+                f"closed={closed} skipped={skipped}"
+            )
+            return closed > 0
+        finally:
+            self._broker_daily_guard_flatten_active = False
+
+    def _enforce_broker_daily_guard(self, prices: Dict[str, float]) -> bool:
+        if not self._broker_balance_enabled() or not self._broker_daily_guard_enabled():
+            return False
+        snapshot = self._broker_daily_guard_snapshot(prices)
+
+        now = time.monotonic()
+        if now - float(self._last_broker_daily_guard_log or 0.0) >= 30.0:
+            self._last_broker_daily_guard_log = now
+            logger.info(
+                "[TradingCore] Broker daily guard: "
+                f"day_start={snapshot['day_start_balance']:.2f} "
+                f"realized={snapshot['realized_pnl']:.2f} "
+                f"floating={snapshot['floating_pnl']:.2f} "
+                f"daily={snapshot['daily_pnl']:.2f} "
+                f"loss_limit=-{snapshot['loss_limit']:.2f} "
+                f"profit_target={snapshot['profit_target']:.2f} "
+                f"reset={snapshot['reset_at_eat']}"
+            )
+
+        if not snapshot.get("triggered"):
+            return False
+        return self._trigger_broker_daily_guard_flatten(snapshot)
+
+    @staticmethod
     def _broker_trailing_stop_enabled() -> bool:
         return bool(IG_MANAGED_TRAILING_STOP_ENABLED)
 
@@ -2978,6 +3164,8 @@ class TradingCore:
             self._reconcile_broker_positions()
             if self._enforce_broker_portfolio_guard(prices):
                 return
+            if self._enforce_broker_daily_guard(prices):
+                return
             self._manage_broker_position_exits(prices)
             self._paper_trader.update_positions(prices)
             try:
@@ -3102,6 +3290,13 @@ class TradingCore:
         except Exception:
             return int(default)
 
+    @staticmethod
+    def _env_bool(name: str, default: bool) -> bool:
+        text = str(os.getenv(name, "")).strip().lower()
+        if not text:
+            return bool(default)
+        return text in {"1", "true", "yes", "on"}
+
     def _broker_startup_execution_block_reason(self) -> str:
         if not self._broker_balance_enabled():
             return ""
@@ -3138,6 +3333,21 @@ class TradingCore:
         if remaining <= 0:
             return ""
         return f"broker portfolio emergency cooldown active for {int(round(remaining))}s"
+
+    def _broker_daily_guard_block_reason(self) -> str:
+        if not self._broker_balance_enabled() or not self._broker_daily_guard_enabled():
+            return ""
+        snapshot = self._broker_daily_guard_snapshot({})
+        status = str(snapshot.get("status") or "")
+        if not status:
+            return ""
+        label = self._broker_daily_guard_status_label(status)
+        return (
+            f"broker {label} active until {snapshot.get('reset_at_eat')}: "
+            f"daily P/L {float(snapshot.get('daily_pnl', 0.0) or 0.0):.2f} "
+            f"(loss limit -{float(snapshot.get('loss_limit', 0.0) or 0.0):.2f}, "
+            f"profit target {float(snapshot.get('profit_target', 0.0) or 0.0):.2f})"
+        )
 
     def _broker_execution_quality_block_reason(self, signal: Signal) -> str:
         if not self._broker_balance_enabled():
@@ -3205,6 +3415,11 @@ class TradingCore:
         cooldown_reason = self._broker_portfolio_cooldown_block_reason()
         if cooldown_reason:
             logger.warning(f"[TradingCore] Broker execution paused: {cooldown_reason}")
+            return 0
+
+        daily_reason = self._broker_daily_guard_block_reason()
+        if daily_reason:
+            logger.warning(f"[TradingCore] Broker execution paused: {daily_reason}")
             return 0
 
         quality_pool = self._filter_broker_execution_quality(survivors)
@@ -6221,6 +6436,8 @@ class TradingCore:
             ("attached_order_error", ("attached_order_level_error",)),
             ("temporary_unavailable", ("broker_temporarily_unavailable", "temporarily unavailable")),
             ("confirm_pending", ("ig_confirm_pending", "confirm pending", "_confirm_pending")),
+            ("daily_loss_limit", ("ig daily loss guard", "daily loss limit")),
+            ("daily_profit_target", ("ig daily profit target", "daily profit target")),
             ("market_closed", ("market closed", "market not open")),
             ("dry_run", ("dry-run", "dry run")),
             ("unknown_rejection", ("ig rejected order: unknown", " rejected order: unknown")),
@@ -6275,7 +6492,13 @@ class TradingCore:
             return
 
         asset_key = str(asset or "?").upper()
-        broker_scope_buckets = {"rate_limit", "temporary_unavailable", "confirm_pending"}
+        broker_scope_buckets = {
+            "rate_limit",
+            "temporary_unavailable",
+            "confirm_pending",
+            "daily_loss_limit",
+            "daily_profit_target",
+        }
         alert_scope = "BROKER" if bucket in broker_scope_buckets else asset_key
         alert_key = f"{alert_scope}:{bucket}"
         now = time.monotonic()

@@ -5,16 +5,38 @@ import os
 import tempfile
 import threading
 from collections import defaultdict
-from datetime import datetime, date, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from utils.logger import get_logger
 
+try:
+    from zoneinfo import ZoneInfo
+except Exception:  # pragma: no cover - Python always has zoneinfo in prod, fallback is defensive.
+    ZoneInfo = None
+
 logger = get_logger()
 
 _STATE_FILE = Path("data/system_state.json")
 _STATE_FILE.parent.mkdir(exist_ok=True)
+_TRADING_DAY_TZ_NAME = (
+    os.getenv("TRADING_DAY_TIMEZONE", os.getenv("BROKER_DAILY_GUARD_TIMEZONE", "Africa/Nairobi")).strip()
+    or "Africa/Nairobi"
+)
+
+
+def _trading_day_timezone():
+    if ZoneInfo is not None:
+        try:
+            return ZoneInfo(_TRADING_DAY_TZ_NAME)
+        except Exception:
+            pass
+    return timezone(timedelta(hours=3), "EAT")
+
+
+def _trading_day_date() -> str:
+    return datetime.now(_trading_day_timezone()).date().isoformat()
 
 
 def _coerce_trade_time(value: Any) -> Optional[datetime]:
@@ -228,7 +250,8 @@ class SystemState:
         self._initial_balance:  float = 10000.0
         self._daily_trades:     int   = 0
         self._daily_pnl:        float = 0.0
-        self._last_save_date:   str   = date.today().isoformat()
+        self._daily_start_balance: float = self._balance
+        self._last_save_date:   str   = _trading_day_date()
         self._cooldowns:        Dict[str, datetime] = {}
         self._strategy_stats:   Dict[str, Dict] = defaultdict(lambda: {"wins": 0, "losses": 0, "pnl": 0.0})
         self._session_stats:    Dict[str, Dict] = defaultdict(lambda: {"wins": 0, "losses": 0, "pnl": 0.0})
@@ -299,7 +322,7 @@ class SystemState:
         sid = pos.get("strategy_id", "UNKNOWN")
         session = pos.get("session", "unknown")
         asset = pos.get("canonical_asset", pos.get("asset", "UNKNOWN"))
-        today = date.today().isoformat()
+        today = _trading_day_date()
 
         for stats_dict, key in [
             (self._strategy_stats, sid),
@@ -534,6 +557,7 @@ class SystemState:
         with self._lock:
             self._balance        = balance
             self._initial_balance = balance
+            self._daily_start_balance = balance
             self._persist_json()
 
     def sync_balance(self, balance: float, reason: str = "broker") -> None:
@@ -559,13 +583,19 @@ class SystemState:
         with self._lock:
             return self._daily_pnl
 
+    @property
+    def daily_start_balance(self) -> float:
+        with self._lock:
+            return self._daily_start_balance
+
     def check_day_rollover(self) -> bool:
         with self._lock:
-            today = date.today().isoformat()
+            today = _trading_day_date()
             if today != self._last_save_date:
-                logger.info("[State] New trading day — resetting daily counters")
+                logger.info("[State] New EAT trading day — resetting daily counters")
                 self._daily_trades   = 0
                 self._daily_pnl      = 0.0
+                self._daily_start_balance = self._balance
                 self._last_save_date = today
                 self._purge_expired_cooldowns()
                 self._persist_json()
@@ -670,7 +700,7 @@ class SystemState:
         partial_snapshot = None
         remaining_snapshot = None
         balance_now = 0.0
-        today = date.today().isoformat()
+        today = _trading_day_date()
 
         with self._lock:
             parent = self._open_positions.get(parent_trade_id)
@@ -745,6 +775,7 @@ class SystemState:
                 "initial_balance": self._initial_balance,
                 "daily_trades":    self._daily_trades,
                 "daily_pnl":       self._daily_pnl,
+                "daily_start_balance": self._daily_start_balance,
                 "last_save_date":  self._last_save_date,
                 "cooldowns":       {k: v.isoformat() for k, v in self._cooldowns.items() if v > datetime.now()},
                 "strategy_stats":  dict(self._strategy_stats),
@@ -769,7 +800,10 @@ class SystemState:
             self._initial_balance = float(raw.get("initial_balance", self._balance))
             self._daily_trades    = int(raw.get("daily_trades",      0))
             self._daily_pnl       = float(raw.get("daily_pnl",       0.0))
-            self._last_save_date  = raw.get("last_save_date", date.today().isoformat())
+            self._daily_start_balance = float(
+                raw.get("daily_start_balance", max(0.0, self._balance - self._daily_pnl))
+            )
+            self._last_save_date  = raw.get("last_save_date", _trading_day_date())
 
             now = datetime.now()
             for k, v in raw.get("cooldowns", {}).items():
@@ -802,10 +836,12 @@ class SystemState:
                     self._remember_entry_time_unlocked(pos)
 
             # Day rollover
-            if self._last_save_date != date.today().isoformat():
+            today = _trading_day_date()
+            if self._last_save_date != today:
                 self._daily_trades   = 0
                 self._daily_pnl      = 0.0
-                self._last_save_date = date.today().isoformat()
+                self._daily_start_balance = self._balance
+                self._last_save_date = today
 
             logger.info(f"[State] JSON loaded — balance=${self._balance:.2f}")
         except Exception as e:
@@ -949,6 +985,7 @@ class SystemState:
             self._asset_stats    = defaultdict(lambda: {"wins": 0, "losses": 0, "pnl": 0.0})
             self._daily_trades = 0
             self._daily_pnl = 0.0
+            self._daily_start_balance = self._balance
             self._persist_json()
 
 

@@ -112,6 +112,17 @@ BROKER_PORTFOLIO_COOLDOWN_MINUTES = _parse_float(
     os.getenv("BROKER_PORTFOLIO_COOLDOWN_MINUTES", "60"),
     60.0,
 )
+BROKER_DAILY_GUARD_ENABLED = _parse_bool(os.getenv("BROKER_DAILY_GUARD_ENABLED", "true"), True)
+BROKER_DAILY_MAX_LOSS_PCT = _parse_float(os.getenv("BROKER_DAILY_MAX_LOSS_PCT", "2.0"), 2.0)
+BROKER_DAILY_PROFIT_TARGET_PCT = _parse_float(os.getenv("BROKER_DAILY_PROFIT_TARGET_PCT", "3.0"), 3.0)
+BROKER_DAILY_GUARD_FLATTEN_ON_PROFIT_TARGET = _parse_bool(
+    os.getenv("BROKER_DAILY_GUARD_FLATTEN_ON_PROFIT_TARGET", "true"),
+    True,
+)
+BROKER_DAILY_GUARD_TIMEZONE = (
+    os.getenv("BROKER_DAILY_GUARD_TIMEZONE", "Africa/Nairobi").strip()
+    or "Africa/Nairobi"
+)
 IG_MANAGED_TRAILING_STOP_ENABLED = _parse_bool(os.getenv("IG_MANAGED_TRAILING_STOP_ENABLED", "true"), True)
 IG_TRAILING_STOP_MIN_UPDATE_SECONDS = _parse_float(
     os.getenv("IG_TRAILING_STOP_MIN_UPDATE_SECONDS", "60"),
