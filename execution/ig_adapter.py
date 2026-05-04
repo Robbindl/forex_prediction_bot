@@ -16,7 +16,12 @@ from config.config import (
 from execution.exchange_adapter import ExchangeAdapter, OrderBookSnapshot, OrderRequest, OrderResult
 from risk.broker_sizer import BrokerContractSpec, BrokerPositionSizer
 from risk.position_sizer import PositionSizer
-from services.ig_market_bridge import IGMarketBridge, IGRequestError, normalize_ig_market_price
+from services.ig_market_bridge import (
+    IGMarketBridge,
+    IGRequestError,
+    denormalize_ig_market_price,
+    normalize_ig_market_price,
+)
 from utils.logger import get_logger
 
 logger = get_logger()
@@ -813,6 +818,102 @@ class IGAdapter(ExchangeAdapter):
             broker_size=broker_close_size,
             local_filled_qty=actual_local_close_size,
             reason=reason,
+        )
+
+    def update_position_stop(
+        self,
+        position: Dict[str, Any],
+        *,
+        stop_level: float,
+        reason: str = "Managed Stop Update",
+    ) -> OrderResult:
+        if str(EXECUTION_ROLE or "trader").lower() != "trader":
+            return OrderResult(order_id="", status="FAILED", error="execution role is read-only")
+
+        self._rate_limiter.acquire()
+        deal_id = str(position.get("broker_trade_id") or position.get("trade_id") or "").strip()
+        asset = str(position.get("asset") or position.get("canonical_asset") or "").strip()
+        display_stop = _safe_float(stop_level, 0.0)
+        broker_stop = round(_safe_float(denormalize_ig_market_price(asset, display_stop), display_stop), 10)
+        if not deal_id or broker_stop <= 0:
+            return OrderResult(order_id=deal_id, status="FAILED", error="IG stop update missing deal id or stop level")
+
+        payload: Dict[str, Any] = {
+            "guaranteedStop": False,
+            "stopLevel": broker_stop,
+            "trailingStop": False,
+        }
+
+        if self._dry_run:
+            return OrderResult(
+                order_id=deal_id,
+                status="FAILED",
+                error="IG execution dry-run is enabled; stop update was not sent",
+                raw={
+                    "request": payload,
+                    "reason": reason,
+                    "display_stop_level": display_stop,
+                    "broker_stop_level": broker_stop,
+                },
+            )
+
+        try:
+            ack = self._bridge._request("PUT", f"{_POSITIONS_OTC}/{deal_id}", json_body=payload, version="2")
+            deal_reference = str(ack.get("dealReference") or "")
+            confirm = self._confirm(deal_reference) if deal_reference else {}
+        except IGRequestError as exc:
+            return OrderResult(
+                order_id=deal_id,
+                status="FAILED",
+                error=f"{exc.code}: {exc.message}",
+                raw={
+                    "request": payload,
+                    "reason": reason,
+                    "display_stop_level": display_stop,
+                    "broker_stop_level": broker_stop,
+                },
+            )
+
+        deal_status = str(confirm.get("dealStatus") or "").upper()
+        if confirm.get("_confirm_pending"):
+            return OrderResult(
+                order_id=deal_id,
+                status="FAILED",
+                error=f"ig_confirm_pending: IG did not finalize stop update for {deal_id}",
+                raw={
+                    "request": payload,
+                    "confirm": confirm,
+                    "reason": reason,
+                    "display_stop_level": display_stop,
+                    "broker_stop_level": broker_stop,
+                },
+            )
+        if deal_status and deal_status != "ACCEPTED":
+            return OrderResult(
+                order_id=deal_id,
+                status="FAILED",
+                error=f"IG rejected stop update: {confirm.get('reason') or deal_status}",
+                raw={
+                    "request": payload,
+                    "confirm": confirm,
+                    "reason": reason,
+                    "display_stop_level": display_stop,
+                    "broker_stop_level": broker_stop,
+                },
+            )
+
+        return OrderResult(
+            order_id=deal_id,
+            status="FILLED",
+            filled_qty=0.0,
+            avg_price=display_stop,
+            raw={
+                "request": payload,
+                "confirm": confirm,
+                "reason": reason,
+                "display_stop_level": display_stop,
+                "broker_stop_level": broker_stop,
+            },
         )
 
     def _get_order_status(self, order_id: str) -> Optional[OrderResult]:

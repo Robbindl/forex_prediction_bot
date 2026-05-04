@@ -34,6 +34,9 @@ from config.config import (
     INACTIVITY_RELIEF_START_HOURS,
     EXECUTION_MODE,
     IG_EXECUTION_ENABLED,
+    IG_MANAGED_TRAILING_STOP_ENABLED,
+    IG_TRAILING_STOP_MIN_IMPROVEMENT_R,
+    IG_TRAILING_STOP_MIN_UPDATE_SECONDS,
     MAX_SIGNAL_CONFIDENCE,
     MIN_FINAL_CONFIDENCE,
     PLAYBOOK_ONLY_RUNTIME,
@@ -236,6 +239,7 @@ class TradingCore:
         self._broker_portfolio_cooldown_until = 0.0
         self._last_broker_portfolio_guard_log = 0.0
         self._broker_portfolio_flatten_active = False
+        self._broker_stop_amend_attempts: Dict[str, float] = {}
         self._dashboard_command_listener_started = False
         self._dashboard_command_thread: Optional[threading.Thread] = None
 
@@ -2651,6 +2655,160 @@ class TradingCore:
             return False
         return self._trigger_broker_portfolio_emergency_flatten(snapshot)
 
+    @staticmethod
+    def _broker_trailing_stop_enabled() -> bool:
+        return bool(IG_MANAGED_TRAILING_STOP_ENABLED)
+
+    @staticmethod
+    def _broker_stop_is_better(direction: str, new_stop: float, old_stop: float) -> bool:
+        if new_stop <= 0 or old_stop <= 0:
+            return False
+        return new_stop > old_stop if str(direction or "BUY").upper() == "BUY" else new_stop < old_stop
+
+    def _apply_live_position_extremes(
+        self,
+        pos: Dict[str, Any],
+        *,
+        entry: float,
+        current_price: float,
+    ) -> Dict[str, Any]:
+        snapshot = dict(pos)
+        snapshot["current_price"] = round(float(current_price), 10)
+        snapshot["highest_price"] = max(
+            self._float_or_zero(snapshot.get("highest_price")) or entry,
+            entry,
+            current_price,
+        )
+        lowest = self._float_or_zero(snapshot.get("lowest_price")) or entry
+        snapshot["lowest_price"] = min(lowest, entry, current_price)
+        return snapshot
+
+    def _candidate_broker_trailing_stop(
+        self,
+        pos: Dict[str, Any],
+        *,
+        direction: str,
+        entry: float,
+    ) -> float:
+        metadata = dict(pos.get("metadata") or {})
+        management = (
+            metadata.get("trade_management_plan")
+            if isinstance(metadata.get("trade_management_plan"), dict)
+            else {}
+        )
+        if not management:
+            return 0.0
+        stop_loss = self._float_or_zero(pos.get("stop_loss"))
+        original_sl = self._float_or_zero(pos.get("original_sl")) or stop_loss
+        initial_risk = abs(entry - original_sl)
+        if initial_risk <= 0.0:
+            return 0.0
+
+        candidate = dict(pos)
+        if bool(management.get("break_even_after_partial")) and int(candidate.get("tp_hit", 0) or 0) > 0:
+            if direction == "BUY" and entry > stop_loss:
+                candidate["stop_loss"] = round(entry, 10)
+            elif direction == "SELL" and entry < stop_loss:
+                candidate["stop_loss"] = round(entry, 10)
+
+        try:
+            trail_activation_rr = max(0.5, float(management.get("trail_activation_rr", 1.0) or 1.0))
+        except Exception:
+            trail_activation_rr = 1.0
+        try:
+            trail_atr_multiple = max(0.4, float(management.get("trail_atr_multiple", 0.8) or 0.8))
+        except Exception:
+            trail_atr_multiple = 0.8
+        atr_value = self._float_or_zero(metadata.get("atr"))
+        self._apply_gapfill_trailing_snapshot(
+            candidate,
+            management=management,
+            direction=direction,
+            entry=entry,
+            stop_loss=stop_loss,
+            initial_risk=initial_risk,
+            atr_value=atr_value,
+            trail_activation_rr=trail_activation_rr,
+            trail_atr_multiple=trail_atr_multiple,
+        )
+        new_stop = self._float_or_zero(candidate.get("stop_loss"))
+        min_improvement = max(0.0, float(IG_TRAILING_STOP_MIN_IMPROVEMENT_R or 0.0)) * initial_risk
+        if min_improvement > 0.0 and abs(new_stop - stop_loss) < min_improvement:
+            return 0.0
+        return new_stop if self._broker_stop_is_better(direction, new_stop, stop_loss) else 0.0
+
+    def _maybe_adjust_broker_trailing_stop(
+        self,
+        pos: Dict[str, Any],
+        *,
+        direction: str,
+        entry: float,
+        current_price: float,
+    ) -> Dict[str, Any]:
+        if not self._broker_balance_enabled() or not self._broker_trailing_stop_enabled():
+            return pos
+        router = getattr(self, "exchange_router", None)
+        if router is None or not hasattr(router, "update_position_stop"):
+            return pos
+        trade_id = str(pos.get("trade_id") or "")
+        if not trade_id:
+            return pos
+
+        candidate_stop = self._candidate_broker_trailing_stop(pos, direction=direction, entry=entry)
+        if candidate_stop <= 0.0:
+            return pos
+        if not self._exit_level_on_correct_side(direction, current_price, candidate_stop, kind="stop"):
+            return pos
+
+        now = time.monotonic()
+        min_seconds = max(5.0, float(IG_TRAILING_STOP_MIN_UPDATE_SECONDS or 60.0))
+        last_attempt = float(self._broker_stop_amend_attempts.get(trade_id) or 0.0)
+        if last_attempt and now - last_attempt < min_seconds:
+            return pos
+        self._broker_stop_amend_attempts[trade_id] = now
+
+        result = router.update_position_stop(
+            pos,
+            stop_level=candidate_stop,
+            reason="IG Managed Trailing Stop",
+        )
+        if result and result.status == "FILLED":
+            metadata = dict(pos.get("metadata") or {})
+            event = {
+                "source": "ig_active_management",
+                "updated_at": datetime.now(timezone.utc).isoformat(),
+                "old_stop": round(self._float_or_zero(pos.get("stop_loss")), 10),
+                "new_stop": round(float(candidate_stop), 10),
+                "current_price": round(float(current_price), 10),
+                "reason": "managed_trailing_stop",
+            }
+            events = metadata.get("broker_stop_events") if isinstance(metadata.get("broker_stop_events"), list) else []
+            metadata["broker_stop_events"] = list(events)[-10:] + [event]
+            metadata["last_broker_stop_event"] = event
+            updated = dict(pos)
+            updated["stop_loss"] = round(float(candidate_stop), 10)
+            updated["broker_stop_loss"] = round(float(candidate_stop), 10)
+            updated["management_checkpoint_at"] = event["updated_at"]
+            updated["metadata"] = metadata
+            self.state.sync_open_position(updated)
+            self._publish_positions_snapshot()
+            logger.info(
+                f"[TradingCore] IG trailing stop amended {updated.get('asset')} "
+                f"{event['old_stop']} -> {event['new_stop']}"
+            )
+            return updated
+
+        reason = getattr(result, "error", "no result") if result is not None else "no result"
+        logger.warning(f"[TradingCore] IG trailing stop amend failed {pos.get('asset')}: {reason}")
+        self._notify_broker_issue(
+            str(pos.get("asset") or "?"),
+            str(pos.get("category") or "unknown"),
+            str(reason),
+            stage="broker trailing stop amend",
+            action="stop was not amended on IG; bot-managed exit remains active and will retry later",
+        )
+        return pos
+
     def _manage_broker_position_exits(self, prices: Dict[str, float]) -> None:
         router = getattr(self, "exchange_router", None)
         if router is None:
@@ -2668,14 +2826,21 @@ class TradingCore:
                 continue
 
             entry_price = self._normalize_position_price(pos, pos.get("entry_price"))
+            pos = self._apply_live_position_extremes(pos, entry=entry_price, current_price=current_price)
+            if pos != raw_pos:
+                self.state.sync_open_position(pos)
             stop_loss = self._float_or_zero(pos.get("stop_loss"))
-            if (
-                self._exit_level_on_correct_side(direction, entry_price, stop_loss, kind="stop")
-                and self._direction_level_hit(direction, current_price, stop_loss, kind="stop")
-            ):
+            if stop_loss > 0 and self._direction_level_hit(direction, current_price, stop_loss, kind="stop"):
                 logger.warning(f"[TradingCore] IG managed stop hit {asset} @ {current_price:.6f}")
                 self.close_position_manually(trade_id, reason="IG Managed Stop Loss")
                 continue
+
+            pos = self._maybe_adjust_broker_trailing_stop(
+                pos,
+                direction=direction,
+                entry=entry_price,
+                current_price=current_price,
+            )
 
             tp_levels = self._broker_position_take_profit_levels(pos)
             if not tp_levels:

@@ -169,6 +169,31 @@ class ExchangeRouter:
             logger.error(f"[Router] Partial close failed for {asset}: {exc}")
             return OrderResult(order_id="", status="FAILED", error=str(exc))
 
+    def update_position_stop(
+        self,
+        position: dict,
+        *,
+        stop_level: float,
+        reason: str = "Managed Stop Update",
+    ) -> Optional[OrderResult]:
+        category = str(position.get("category") or "forex")
+        asset = str(position.get("asset") or "")
+        broker_name = str(position.get("broker") or "").lower()
+        adapter = self._adapters.get(broker_name) if broker_name else None
+        if adapter is None:
+            adapter = self._get_adapter(category, asset=asset)
+        if adapter is None:
+            logger.error(f"[Router] No stop-update adapter for {asset or category}")
+            return None
+        update_fn = getattr(adapter, "update_position_stop", None)
+        if not callable(update_fn):
+            return OrderResult(order_id="", status="FAILED", error=f"{adapter.name} does not support stop updates")
+        try:
+            return update_fn(position, stop_level=stop_level, reason=reason)
+        except Exception as exc:
+            logger.error(f"[Router] Stop update failed for {asset}: {exc}")
+            return OrderResult(order_id="", status="FAILED", error=str(exc))
+
     def list_open_positions(self, broker_name: str) -> list[dict]:
         adapter = self._adapters.get(str(broker_name or "").lower())
         if adapter is None:
