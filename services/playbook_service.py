@@ -1149,6 +1149,58 @@ class PlaybookService:
             "asset_plan": asset_plan,
         }
 
+    def _builder_selection_wait_reason(
+        self,
+        structure: Dict[str, Any],
+        confluence: Dict[str, Any],
+        direction: str,
+    ) -> str:
+        sign = _playbook_direction_sign(direction)
+        if sign == 0:
+            return "no_direction"
+
+        bias = str(structure.get("structure_bias") or "").strip().lower()
+        family = str(structure.get("pattern_family") or "").strip().lower()
+        alignment = _safe_float(structure.get("alignment_score"), 0.0)
+        setup = _safe_float(structure.get("setup_quality"), 0.0)
+        target = _safe_float(structure.get("target_efficiency_score"), 1.0)
+        extension = _safe_float(structure.get("extension_score"), 0.0)
+        impulse_age = _safe_int(structure.get("impulse_age_bars"), 0)
+        cluster = _safe_float(structure.get("cluster_penalty"), 0.0)
+        support = int(confluence.get("support_components", 0) or 0)
+        depth_override = bool(confluence.get("depth_confirmation_override_allowed"))
+        trigger_aligned = bool(structure.get("trigger_trend_aligned")) or _trend_sign(structure.get("trend_5m")) == sign
+        trend_aligned = trigger_aligned or _trend_sign(structure.get("trend_15m")) == sign or _trend_sign(structure.get("trend_1h")) == sign
+        confirmation_ready = bool(
+            structure.get("entry_confirmation_ready")
+            or structure.get("fast_entry_confirmation_ready")
+            or structure.get("first_pullback_ready")
+        )
+
+        if bias == "neutral" and not ("trending_up" in family or "trending_down" in family):
+            return "neutral_structure"
+        if bias in {"buy", "sell"} and ((bias == "buy" and sign < 0) or (bias == "sell" and sign > 0)):
+            return "bias_conflict"
+        if alignment < 0.36 or setup < 0.32:
+            return "setup_quality_too_weak"
+        if cluster > 0.28:
+            return "cluster_risk"
+        if target < 0.08:
+            return "target_space_too_thin"
+        if extension > 1.62 and not depth_override:
+            return "entry_extended"
+        if impulse_age > 16 and not (depth_override and support >= 1):
+            return "setup_too_old"
+        if not trend_aligned:
+            return "trend_misaligned"
+        if not confirmation_ready:
+            return "confirmation_pending"
+        if alignment < 0.48 or setup < 0.46:
+            return "builder_threshold_wait"
+        if support <= 0:
+            return "context_support_missing"
+        return "no_builder_selected"
+
     def _no_seed_reason(
         self,
         asset: str,
@@ -1184,7 +1236,8 @@ class PlaybookService:
             return "depth_context_pressure_wait:neutral_structure"
         if rejected_details:
             return _best_rejected_reason(rejected_details)
-        return "depth_context_pressure_wait:no_builder_selected"
+        builder_reason = self._builder_selection_wait_reason(structure, confluence, direction)
+        return f"depth_context_pressure_wait:{builder_reason}"
 
     def pick_seed(
         self,
