@@ -120,6 +120,46 @@ def _compute_position_pnl(
         return float(current_price - entry_price) * float(position_size)
 
 
+def _nested_dict(payload: Dict[str, Any], key: str) -> Dict[str, Any]:
+    value = payload.get(key) if isinstance(payload, dict) else {}
+    return value if isinstance(value, dict) else {}
+
+
+def _ig_actual_cash_per_price_unit_per_size(position: Dict[str, Any], asset: str) -> float:
+    if not _is_ig_position(position):
+        return 0.0
+    canonical = str(asset or position.get("asset") or position.get("canonical_asset") or "").upper()
+    # IG $1 commodity CFDs pay by IG display point.  XAG and WTI are displayed
+    # in cents by IG, so one chart-scale unit equals 100 broker points.
+    if canonical in {"XAU/USD", "GC=F"}:
+        return 1.0
+    if canonical in {"XAG/USD", "SI=F", "WTI", "WTI/USD", "CL=F"}:
+        return 100.0
+    metadata = _nested_dict(position, "metadata")
+    broker_execution = _nested_dict(metadata, "broker_execution")
+    broker_sizing = _nested_dict(broker_execution, "broker_sizing")
+    value = _coerce_float(broker_sizing.get("broker_cash_per_price_unit_per_size"))
+    return value if value > 0 else 0.0
+
+
+def _compute_ig_broker_pnl(
+    position: Dict[str, Any],
+    *,
+    asset: str,
+    entry_price: float,
+    current_price: float,
+    direction: str,
+) -> Optional[float]:
+    broker_size = _coerce_float(position.get("broker_position_size"))
+    cash_per_unit = _ig_actual_cash_per_price_unit_per_size(position, asset)
+    if broker_size <= 0 or cash_per_unit <= 0 or entry_price <= 0 or current_price <= 0:
+        return None
+    diff = float(current_price) - float(entry_price)
+    if str(direction or "").upper() == "SELL":
+        diff = -diff
+    return float(diff) * broker_size * cash_per_unit
+
+
 def resolve_live_position_snapshot(
     position: Dict[str, Any],
     *,
@@ -178,14 +218,23 @@ def resolve_live_position_snapshot(
             price_source = str(position.get("current_price_source") or "")
 
     current_price = _normalize_position_price(normalized_position, asset, current_price)
-    live_pnl = _compute_position_pnl(
-        asset,
-        category,
-        entry_price,
-        current_price,
-        position_size,
-        direction,
+    broker_pnl = _compute_ig_broker_pnl(
+        normalized_position,
+        asset=asset,
+        entry_price=entry_price,
+        current_price=current_price,
+        direction=direction,
     )
+    live_pnl = broker_pnl
+    if live_pnl is None:
+        live_pnl = _compute_position_pnl(
+            asset,
+            category,
+            entry_price,
+            current_price,
+            position_size,
+            direction,
+        )
 
     return {
         "asset": asset,

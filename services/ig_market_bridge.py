@@ -79,7 +79,7 @@ _STREAMING_SESSION_TTL_SEC = 5 * 60.0
 _PROJECT_ROOT = Path(__file__).resolve().parent.parent
 _REST_ALLOWANCE_HOLDOFF_PATH = _PROJECT_ROOT / "data" / "ig_rest_allowance_holdoff.json"
 _CONTRACT_SPEC_CACHE_PATH = _PROJECT_ROOT / "data" / "ig_contract_specs.json"
-_CONTRACT_SPEC_SCHEMA_VERSION = 3
+_CONTRACT_SPEC_SCHEMA_VERSION = 4
 
 _DEFAULT_EPIC_MAP = {
     "XAU/USD": "CS.D.CFDGOLD.BMU.IP",

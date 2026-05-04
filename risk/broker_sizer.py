@@ -137,6 +137,10 @@ def _money_value_from_name(name: str) -> float:
         return 0.0
 
 
+def _ig_price_scale_factor(asset: str) -> float:
+    return 100.0 if str(asset or "").upper() in {"XAG/USD", "SI=F", "WTI", "WTI/USD", "CL=F"} else 1.0
+
+
 def _currency_code(value: Any, default: str = "USD") -> str:
     if isinstance(value, list):
         for item in value:
@@ -355,6 +359,8 @@ class BrokerPositionSizer:
             or asset
         )
         category = _asset_category(asset)
+        named_value = _money_value_from_name(name)
+        price_scale = _ig_price_scale_factor(asset)
         local_spec = PositionSizer.get_spec(asset, category)
         local_pip = _safe_float(local_spec.get("pip"), 0.0)
         local_pip_value = _safe_float(local_spec.get("pip_val"), 0.0)
@@ -370,14 +376,21 @@ class BrokerPositionSizer:
             point_size = float(default_point_size or 0.0)
         if point_size <= 0:
             point_size = _fallback_ig_point_size(asset, category, local_pip, name)
+        if category == "commodities" and named_value > 0:
+            # IG names like "Spot Gold ($1)" and "Spot Silver ($1)" describe
+            # cash per broker display point, not necessarily valueOfOnePip.
+            # Keep the spec in the bot's chart scale: gold uses 1.00 points,
+            # silver/oil use broker-cent quotes, so 1 chart unit is 100 points.
+            point_size = 1.0 / max(price_scale, 1.0)
 
         cash_per_point = _safe_float(instrument.get("valueOfOnePip"), 0.0)
+        if category == "commodities" and named_value > 0:
+            cash_per_point = named_value
         if cash_per_point <= 0:
             contract_size = _safe_float(instrument.get("contractSize"), 0.0)
             if contract_size > 0 and point_size > 0:
                 cash_per_point = contract_size * point_size
         if cash_per_point <= 0:
-            named_value = _money_value_from_name(name)
             if named_value > 0:
                 cash_per_point = named_value
         if category == "forex" and local_pip_value > 0:
