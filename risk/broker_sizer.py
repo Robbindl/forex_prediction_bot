@@ -363,6 +363,10 @@ class BrokerPositionSizer:
         if point_size <= 0:
             point_size = _safe_float(instrument.get("pip"), 0.0)
         if point_size <= 0:
+            fallback_point_size = _fallback_ig_point_size(asset, category, local_pip, name)
+            if category != "forex" and fallback_point_size > 0:
+                point_size = fallback_point_size
+        if point_size <= 0:
             point_size = float(default_point_size or 0.0)
         if point_size <= 0:
             point_size = _fallback_ig_point_size(asset, category, local_pip, name)

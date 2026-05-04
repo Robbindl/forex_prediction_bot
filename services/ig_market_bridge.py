@@ -79,6 +79,7 @@ _STREAMING_SESSION_TTL_SEC = 5 * 60.0
 _PROJECT_ROOT = Path(__file__).resolve().parent.parent
 _REST_ALLOWANCE_HOLDOFF_PATH = _PROJECT_ROOT / "data" / "ig_rest_allowance_holdoff.json"
 _CONTRACT_SPEC_CACHE_PATH = _PROJECT_ROOT / "data" / "ig_contract_specs.json"
+_CONTRACT_SPEC_SCHEMA_VERSION = 2
 
 _DEFAULT_EPIC_MAP = {
     "XAU/USD": "CS.D.CFDGOLD.BMU.IP",
@@ -683,6 +684,8 @@ class IGMarketBridge:
             payload = item.get("payload")
             if not isinstance(payload, dict):
                 return None
+            if int(float(payload.get("cache_schema_version") or 0)) != _CONTRACT_SPEC_SCHEMA_VERSION:
+                return None
             cached_at = float(item.get("cached_at", 0.0) or 0.0)
             if not allow_stale and (time.time() - cached_at) >= _CONTRACT_SPEC_TTL_SEC:
                 return None
@@ -757,6 +760,7 @@ class IGMarketBridge:
             if broker_spec is None:
                 return None
             payload = broker_spec.__dict__.copy()
+            payload["cache_schema_version"] = _CONTRACT_SPEC_SCHEMA_VERSION
             payload["cash_per_price_unit_per_size"] = broker_spec.cash_per_price_unit_per_size
             payload["instrument_name"] = str(
                 (details.get("instrument") or {}).get("name")

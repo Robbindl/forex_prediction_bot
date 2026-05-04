@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import time
+import math
 import os
 import uuid
 from datetime import datetime, timezone
@@ -23,6 +24,7 @@ logger = get_logger()
 _POSITIONS_OTC = "/positions/otc"
 _CONFIRM_ENDPOINT = "/confirms/{deal_reference}"
 _POSITIONS_ENDPOINT = "/positions"
+_ALT_CRYPTO_ASSETS = {"ETH-USD", "SOL-USD", "XRP-USD", "BNB-USD"}
 
 
 def _safe_float(value: Any, default: float = 0.0) -> float:
@@ -67,6 +69,7 @@ class IGAdapter(ExchangeAdapter):
         self._dry_run = bool(IG_EXECUTION_DRY_RUN if dry_run is None else dry_run)
         self._currency = str(currency or IG_EXECUTION_CURRENCY or "USD").upper()
         self._environment = str(IG_ENVIRONMENT or "demo").lower()
+        self._allow_alt_crypto = os.getenv("IG_EXECUTION_ALLOW_ALT_CRYPTO", "false").lower() == "true"
         disabled_assets = {
             item.strip().upper()
             for item in os.getenv("IG_EXECUTION_DISABLED_ASSETS", "").replace(";", ",").split(",")
@@ -77,8 +80,24 @@ class IGAdapter(ExchangeAdapter):
             for asset in disabled_assets
         }
 
+    def _execution_disabled_reason(self, asset: str, category: str = "") -> str:
+        asset_key = str(asset or "").upper()
+        if (
+            str(category or "").lower() == "crypto"
+            and asset_key in _ALT_CRYPTO_ASSETS
+            and not self._allow_alt_crypto
+        ):
+            return (
+                "IG alt-crypto execution disabled: account has no access to "
+                "CRYP_CFD_ALT; BTC-USD is the only enabled IG crypto route"
+            )
+        return ""
+
     def supports_asset(self, asset: str, category: str = "") -> tuple[bool, str]:
         asset_key = str(asset or "").upper()
+        disabled_reason = self._execution_disabled_reason(asset_key, category)
+        if disabled_reason:
+            return False, disabled_reason
         cached_reason = self._unsupported_assets.get(asset_key)
         if cached_reason:
             return False, cached_reason
@@ -100,6 +119,9 @@ class IGAdapter(ExchangeAdapter):
 
         asset = req.asset or req.symbol
         category = req.category or ""
+        disabled_reason = self._execution_disabled_reason(asset, category)
+        if disabled_reason:
+            return OrderResult(order_id="", status="FAILED", error=disabled_reason)
         resolved = self._bridge.resolve_symbol_info(asset, category=category)
         if not resolved:
             return OrderResult(order_id="", status="FAILED", error=f"IG epic not found for {asset}")
@@ -172,6 +194,7 @@ class IGAdapter(ExchangeAdapter):
             if self._is_permission_error(error):
                 error = f"broker_permission_denied: {error}"
                 self._unsupported_assets[str(asset or "").upper()] = error
+                self._cache_alt_crypto_denial(error)
             return OrderResult(
                 order_id="",
                 status="FAILED",
@@ -200,6 +223,7 @@ class IGAdapter(ExchangeAdapter):
             if self._is_permission_error(error):
                 error = f"broker_permission_denied: {error}"
                 self._unsupported_assets[str(asset or "").upper()] = error
+                self._cache_alt_crypto_denial(error)
             return OrderResult(
                 order_id="",
                 status="FAILED",
@@ -351,6 +375,16 @@ class IGAdapter(ExchangeAdapter):
                 level = reference + distance if side == "BUY" else reference - distance
             return round(level, decimals)
 
+        def align_points(points: float) -> float:
+            value = float(points or 0.0)
+            if step_points <= 0 or value <= 0:
+                return value
+            aligned = math.ceil((value - 1e-12) / step_points) * step_points
+            if max_points > 0 and aligned > max_points:
+                floored = math.floor((max_points + 1e-12) / step_points) * step_points
+                aligned = floored if floored > 0 else max_points
+            return float(aligned)
+
         def attach(kind: str, requested_level: Any) -> None:
             level = _safe_float(requested_level, 0.0)
             if level <= 0:
@@ -365,6 +399,7 @@ class IGAdapter(ExchangeAdapter):
                 points = required_points
             if max_points > 0 and points > max_points:
                 points = max_points
+            points = align_points(points)
             if points <= 0:
                 meta[kind] = {
                     "requested_level": level,
@@ -422,6 +457,16 @@ class IGAdapter(ExchangeAdapter):
                 "account not enabled",
             )
         )
+
+    def _cache_alt_crypto_denial(self, error: str) -> None:
+        if "cryp_cfd_alt" not in str(error or "").lower():
+            return
+        reason = (
+            "broker_permission_denied: IG account has no access to CRYP_CFD_ALT "
+            f"({error})"
+        )
+        for asset in _ALT_CRYPTO_ASSETS:
+            self._unsupported_assets[asset] = reason
 
     @staticmethod
     def _confirm_reject_message(confirm: Dict[str, Any]) -> str:
