@@ -110,11 +110,12 @@ def _main_menu_keyboard(summary: Optional[Dict[str, Any]] = None) -> InlineKeybo
     open_positions = max(0, int(summary.get("open_positions", 0) or 0))
     diary_trades = max(0, int(summary.get("diary_trades", 0) or 0))
     is_running = bool(summary.get("is_running", False))
+    is_paused = bool(summary.get("trading_paused", False))
 
     positions_label = f"📈 Positions ({open_positions})"
     diary_label = f"📔 Diary ({diary_trades})" if diary_trades > 0 else "📔 Diary"
-    run_label = "⏸ Pause" if is_running else "▶️ Resume"
-    run_action = "pause" if is_running else "resume"
+    run_label = "▶️ Resume" if is_paused or not is_running else "⏸ Pause"
+    run_action = "resume" if is_paused or not is_running else "pause"
 
     return _kb(
         [("📊 Status",    "status"),   (positions_label, "positions")],
@@ -1038,8 +1039,15 @@ class TelegramCommander:
             execution_text = f"\n🏛️ *Execution Review*\n{execution_block}" if execution_block else ""
             review_block = self._format_trade_review_block(trade)
             review_text = f"\n{review_block}" if review_block else ""
+            is_partial = bool(trade.get("is_partial_close"))
+            title = "PARTIAL TP CLOSED" if is_partial else "TRADE CLOSED"
+            narrative = (
+                "This was a partial broker-managed exit; the runner stays open if the broker still reports a remaining position."
+                if is_partial
+                else self._trade_close_narrative(trade)
+            )
             self.send_message(
-                f"{icon} *TRADE CLOSED*\n"
+                f"{icon} *{title}*\n"
                 f"━━━━━━━━━━━━━━━━━━\n"
                 f"📌 Asset:    *{_a2}*\n"
                 f"📍 Direction: *{d}*\n"
@@ -1049,7 +1057,7 @@ class TelegramCommander:
                 f"🕑 Closed:   `{close_str}`\n"
                 f"⏱ Duration: `{dur_str}`\n"
                 f"━━━━━━━━━━━━━━━━━━\n"
-                f"{self._trade_close_narrative(trade)}\n"
+                f"{narrative}\n"
                 f"Entry:  `{self._fmt_price(_en, _a2)}`\n"
                 f"Exit:   `{self._fmt_price(_ex, _a2)}`\n"
                 f"P&L:    `{sign}${pnl:.2f}`"
@@ -1783,7 +1791,7 @@ class TelegramCommander:
         health  = core.health_report()
         perf    = core.get_performance()
         daily   = core.get_daily_stats()
-        status  = "🟢 Running" if core.is_running else "🔴 Stopped"
+        status  = "⏸ Paused" if bool(health.get("trading_paused")) else ("🟢 Running" if core.is_running else "🔴 Stopped")
         ready   = "✅" if core.is_ready else "⏳"
 
         open_pos  = health.get("open_positions", 0)
@@ -2554,6 +2562,7 @@ class TelegramCommander:
         open_positions = 0
         balance = "—"
         is_running = False
+        trading_paused = False
 
         if core:
             try:
@@ -2565,6 +2574,7 @@ class TelegramCommander:
             except Exception:
                 balance = "—"
             is_running = bool(getattr(core, "is_running", False))
+            trading_paused = bool(getattr(core, "trading_paused", False))
 
         diary_trades = 0
         try:
@@ -2579,12 +2589,13 @@ class TelegramCommander:
             "open_positions": open_positions,
             "balance": balance,
             "is_running": is_running,
+            "trading_paused": trading_paused,
             "diary_trades": diary_trades,
         }
 
     def _build_main_menu(self) -> tuple[str, InlineKeyboardMarkup]:
         summary = self._main_menu_snapshot()
-        status = "🟢 Running" if summary["is_running"] else "🔴 Stopped"
+        status = "⏸ Paused" if summary.get("trading_paused") else ("🟢 Running" if summary["is_running"] else "🔴 Stopped")
         balance = summary["balance"]
         open_positions = int(summary["open_positions"])
         diary_trades = int(summary["diary_trades"])
@@ -3685,9 +3696,15 @@ class TelegramCommander:
         core = self.trading_system
         if not core:
             return "⏳ Engine not ready."
-        if not core.is_running:
-            return "⚠️ Already paused."
         try:
+            if bool(getattr(core, "trading_paused", False)):
+                return "⚠️ Already paused."
+            pause_fn = getattr(core, "pause_trading", None)
+            if callable(pause_fn):
+                pause_fn(reason="Paused via Telegram", source="telegram")
+                return "⏸️ *Trading Paused*\n\nNo new trades will open. Existing broker positions will still be managed.\nUse ▶️ Resume to restart entries."
+            if not core.is_running:
+                return "⚠️ Already paused."
             core.stop(reason="Paused via Telegram")
             return "⏸️ *Trading Paused*\n\nNo new trades will open.\nUse ▶️ Resume to restart."
         except Exception as e:
@@ -3697,9 +3714,13 @@ class TelegramCommander:
         core = self.trading_system
         if not core:
             return "⏳ Engine not ready."
-        if core.is_running:
-            return "⚠️ Already running."
         try:
+            resume_fn = getattr(core, "resume_trading", None)
+            if callable(resume_fn) and bool(getattr(core, "trading_paused", False)):
+                resume_fn(source="telegram")
+                return "▶️ *Trading Resumed*\n\nScanning for opportunities."
+            if core.is_running:
+                return "⚠️ Already running."
             core.start()
             return "▶️ *Trading Resumed*\n\nScanning for opportunities."
         except Exception as e:

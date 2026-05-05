@@ -9,6 +9,7 @@ import threading
 import time
 from collections import Counter
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Tuple, Type, cast
 
 import pandas as pd
@@ -252,6 +253,8 @@ class TradingCore:
         self._last_broker_daily_guard_log = 0.0
         self._broker_daily_guard_flatten_active = False
         self._broker_stop_amend_attempts: Dict[str, float] = {}
+        self._broker_stop_amend_failures: Dict[str, int] = {}
+        self._last_manual_pause_log = 0.0
         self._dashboard_command_listener_started = False
         self._dashboard_command_thread: Optional[threading.Thread] = None
 
@@ -292,6 +295,110 @@ class TradingCore:
     @property
     def is_ready(self) -> bool:
         return self._engine_ready.is_set()
+
+    @staticmethod
+    def _manual_pause_file() -> Path:
+        return Path("data") / "runtime_locks" / "trading_pause.json"
+
+    @classmethod
+    def _load_manual_pause_payload(cls) -> Dict[str, Any]:
+        path = cls._manual_pause_file()
+        try:
+            if not path.exists():
+                return {}
+            with path.open("r", encoding="utf-8") as handle:
+                payload = json.load(handle)
+            return payload if isinstance(payload, dict) else {}
+        except Exception:
+            return {}
+
+    @classmethod
+    def _write_manual_pause_payload(cls, payload: Dict[str, Any]) -> None:
+        path = cls._manual_pause_file()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        tmp = path.with_suffix(".tmp")
+        with tmp.open("w", encoding="utf-8") as handle:
+            json.dump(payload, handle, sort_keys=True)
+        tmp.replace(path)
+
+    @classmethod
+    def _clear_manual_pause_payload(cls) -> None:
+        try:
+            cls._manual_pause_file().unlink(missing_ok=True)
+        except Exception:
+            pass
+
+    @staticmethod
+    def _parse_pause_until(raw: Any) -> Optional[datetime]:
+        text = str(raw or "").strip()
+        if not text:
+            return None
+        try:
+            dt = datetime.fromisoformat(text.replace("Z", "+00:00"))
+            if dt.tzinfo is None:
+                dt = dt.replace(tzinfo=timezone.utc)
+            return dt.astimezone(timezone.utc)
+        except Exception:
+            return None
+
+    def trading_pause_state(self) -> Dict[str, Any]:
+        payload = self._load_manual_pause_payload()
+        if not payload.get("active"):
+            return {"active": False}
+        until = self._parse_pause_until(payload.get("until_utc"))
+        if until is not None and datetime.now(timezone.utc) >= until:
+            self._clear_manual_pause_payload()
+            return {"active": False, "expired": True}
+        payload["active"] = True
+        return payload
+
+    @property
+    def trading_paused(self) -> bool:
+        return bool(self.trading_pause_state().get("active"))
+
+    def pause_trading(
+        self,
+        *,
+        reason: str = "manual pause",
+        until: Optional[Any] = None,
+        source: str = "manual",
+    ) -> Dict[str, Any]:
+        until_dt: Optional[datetime] = None
+        if isinstance(until, datetime):
+            until_dt = until if until.tzinfo else until.replace(tzinfo=timezone.utc)
+            until_dt = until_dt.astimezone(timezone.utc)
+        else:
+            until_dt = self._parse_pause_until(until)
+        payload = {
+            "active": True,
+            "reason": str(reason or "manual pause"),
+            "source": str(source or "manual"),
+            "paused_at_utc": datetime.now(timezone.utc).isoformat(),
+            "until_utc": until_dt.isoformat() if until_dt else "",
+        }
+        self._write_manual_pause_payload(payload)
+        logger.warning(
+            "[TradingCore] Trading manually paused"
+            + (f" until {payload['until_utc']}" if payload["until_utc"] else "")
+            + f": {payload['reason']}"
+        )
+        return {"success": True, "paused": True, "pause": payload}
+
+    def resume_trading(self, *, source: str = "manual") -> Dict[str, Any]:
+        was_paused = bool(self.trading_pause_state().get("active"))
+        self._clear_manual_pause_payload()
+        logger.warning(f"[TradingCore] Trading manual pause cleared by {source or 'manual'}")
+        return {"success": True, "paused": False, "was_paused": was_paused}
+
+    def _manual_pause_block_reason(self) -> str:
+        pause = self.trading_pause_state()
+        if not pause.get("active"):
+            return ""
+        reason = str(pause.get("reason") or "manual pause").strip()
+        until = str(pause.get("until_utc") or "").strip()
+        if until:
+            return f"manual trading pause active until {until}: {reason}"
+        return f"manual trading pause active: {reason}"
 
     # ── Public API ────────────────────────────────────────────────────────────
 
@@ -1672,9 +1779,14 @@ class TradingCore:
         if ig_broker.get("enabled") and not ig_broker.get("authenticated", False):
             error_message = str(ig_broker.get("error_message") or ig_broker.get("error_code") or "unavailable")
             issues.append(f"IG broker data unavailable: {error_message}")
+        manual_pause = self.trading_pause_state()
+        if manual_pause.get("active"):
+            issues.append("Trading manually paused")
         return {
             "is_running":       self._is_running,
             "engine_ready":     self._engine_ready.is_set(),
+            "trading_paused":    bool(manual_pause.get("active")),
+            "trading_pause":     manual_pause,
             "strategy_mode":    self.strategy_mode,
             "balance":          self.state.balance,
             "open_positions":   self.state.open_position_count(),
@@ -1693,7 +1805,7 @@ class TradingCore:
             "ig_broker":        ig_broker,
             "signal_diagnostics": signal_diagnostics,
             "issues":           issues,
-            "status":           "healthy" if not issues else "degraded",
+            "status":           "paused" if manual_pause.get("active") else ("healthy" if not issues else "degraded"),
         }
 
     def _record_trade_close_side_effects(self, trade: Dict[str, Any], pnl: float) -> None:
@@ -1959,6 +2071,53 @@ class TradingCore:
         snapshot["metadata"] = metadata
         return self._normalize_broker_position_prices(snapshot)
 
+    def _match_ig_position_for_local(
+        self,
+        local_pos: Dict[str, Any],
+        raw_positions: List[Dict[str, Any]],
+        used_deal_ids: set[str],
+    ) -> Optional[Dict[str, Any]]:
+        local_epic = str(local_pos.get("broker_symbol") or "").strip().upper()
+        if not local_epic:
+            return None
+        local_direction = str(local_pos.get("direction") or local_pos.get("signal") or "").strip().upper()
+        local_broker_size = self._float_or_zero(local_pos.get("broker_position_size"))
+        candidates: List[Tuple[float, Dict[str, Any]]] = []
+
+        for item in raw_positions:
+            if not isinstance(item, dict):
+                continue
+            broker_pos = item.get("position") if isinstance(item.get("position"), dict) else {}
+            market = item.get("market") if isinstance(item.get("market"), dict) else {}
+            deal_id = str(broker_pos.get("dealId") or "").strip()
+            if deal_id and deal_id in used_deal_ids:
+                continue
+            epic = str(market.get("epic") or "").strip().upper()
+            if epic != local_epic:
+                continue
+            direction = str(broker_pos.get("direction") or "").strip().upper()
+            if local_direction and direction and direction != local_direction:
+                continue
+            broker_size = self._float_or_zero(broker_pos.get("size"))
+            size_diff = abs(broker_size - local_broker_size) if local_broker_size > 0 and broker_size > 0 else 0.0
+            size_tolerance = max(0.02, local_broker_size * 0.05)
+            if local_broker_size > 0 and broker_size > 0 and size_diff > max(0.05, local_broker_size * 0.25):
+                continue
+            score = 100.0
+            if local_direction and direction == local_direction:
+                score += 20.0
+            if local_broker_size > 0 and broker_size > 0:
+                score += max(0.0, 20.0 - (size_diff / max(size_tolerance, 1e-9)) * 20.0)
+            candidates.append((score, item))
+
+        if not candidates:
+            return None
+        candidates.sort(key=lambda row: row[0], reverse=True)
+        best_score, best_item = candidates[0]
+        if len(candidates) > 1 and best_score - candidates[1][0] < 5.0:
+            return None
+        return best_item
+
     def _close_local_broker_position_missing_on_ig(self, pos: Dict[str, Any]) -> bool:
         trade_id = str(pos.get("trade_id") or "").strip()
         if not trade_id:
@@ -2010,8 +2169,9 @@ class TradingCore:
             )
             return
 
+        normalized_raw_positions = [item for item in list(raw_positions or []) if isinstance(item, dict)]
         by_deal_id: Dict[str, Dict[str, Any]] = {}
-        for item in list(raw_positions or []):
+        for item in normalized_raw_positions:
             if not isinstance(item, dict):
                 continue
             broker_pos = item.get("position") if isinstance(item.get("position"), dict) else {}
@@ -2020,26 +2180,52 @@ class TradingCore:
                 by_deal_id[deal_id] = item
 
         synced = 0
+        rematched = 0
         closed_missing = 0
+        used_deal_ids: set[str] = set()
         for pos in list(self.state.get_open_positions() or []):
             if not self._is_broker_managed_position(pos):
                 continue
             deal_id = str(pos.get("broker_trade_id") or pos.get("trade_id") or "").strip()
             raw_item = by_deal_id.get(deal_id)
             if raw_item:
+                used_deal_ids.add(deal_id)
                 snapshot = self._extract_ig_position_snapshot(pos, raw_item)
                 if snapshot != pos:
                     self.state.sync_open_position(snapshot)
                     synced += 1
+                continue
+            raw_item = self._match_ig_position_for_local(pos, normalized_raw_positions, used_deal_ids)
+            if raw_item:
+                broker_pos = raw_item.get("position") if isinstance(raw_item.get("position"), dict) else {}
+                new_deal_id = str(broker_pos.get("dealId") or "").strip()
+                if new_deal_id:
+                    used_deal_ids.add(new_deal_id)
+                snapshot = self._extract_ig_position_snapshot(pos, raw_item)
+                metadata = dict(snapshot.get("metadata") or {})
+                metadata["broker_reconciliation_deal_remap"] = {
+                    "source": "ig_positions",
+                    "remapped_at": datetime.now(timezone.utc).isoformat(),
+                    "old_deal_id": deal_id,
+                    "new_deal_id": new_deal_id,
+                    "reason": "matched remaining broker position by epic and direction after deal id mismatch",
+                }
+                snapshot["metadata"] = metadata
+                self.state.sync_open_position(snapshot)
+                rematched += 1
+                logger.warning(
+                    f"[TradingCore] IG reconciliation remapped {pos.get('asset')} "
+                    f"{deal_id or 'unknown'} -> {new_deal_id or 'unknown'}"
+                )
                 continue
             if self._position_age_seconds(pos) < self._broker_missing_grace_seconds():
                 continue
             if self._close_local_broker_position_missing_on_ig(pos):
                 closed_missing += 1
 
-        if synced or closed_missing:
+        if synced or rematched or closed_missing:
             logger.info(
-                f"[TradingCore] IG reconciliation synced={synced} "
+                f"[TradingCore] IG reconciliation synced={synced} remapped={rematched} "
                 f"closed_missing={closed_missing}"
             )
             self._publish_positions_snapshot()
@@ -2318,6 +2504,21 @@ class TradingCore:
             "message": f"Closed {len(closed)} position(s), skipped {len(skipped)}",
         }
 
+    def _dashboard_pause_trading_command(self, payload: Dict[str, Any]) -> Dict[str, Any]:
+        until = payload.get("until_utc") or payload.get("until")
+        result = self.pause_trading(
+            reason=str(payload.get("reason") or "Dashboard/Telegram pause"),
+            until=until,
+            source=str(payload.get("source") or "command_bridge"),
+        )
+        result["message"] = "Trading paused; live position management remains active"
+        return result
+
+    def _dashboard_resume_trading_command(self, payload: Dict[str, Any]) -> Dict[str, Any]:
+        result = self.resume_trading(source=str(payload.get("source") or "command_bridge"))
+        result["message"] = "Trading resumed"
+        return result
+
     def _handle_dashboard_command(self, command: Dict[str, Any]) -> Dict[str, Any]:
         action = str(command.get("action") or "").strip().lower()
         payload = command.get("payload") if isinstance(command.get("payload"), dict) else {}
@@ -2327,6 +2528,10 @@ class TradingCore:
             return self._dashboard_close_position_command(payload)
         if action == "close_positions_bulk":
             return self._dashboard_close_bulk_command(payload)
+        if action == "pause_trading":
+            return self._dashboard_pause_trading_command(payload)
+        if action == "resume_trading":
+            return self._dashboard_resume_trading_command(payload)
         return {"success": False, "error": f"Unsupported dashboard command: {action or 'unknown'}"}
 
     def _dashboard_command_loop(self) -> None:
@@ -2475,6 +2680,12 @@ class TradingCore:
         events = metadata.get("broker_tp_events") if isinstance(metadata.get("broker_tp_events"), list) else []
         metadata["broker_tp_events"] = list(events)[-10:] + [broker_tp_note]
         metadata["last_broker_tp_event"] = broker_tp_note
+        metadata["last_broker_partial_close"] = {
+            **broker_tp_note,
+            "broker_remaining_size": round(float(broker_remaining_size), 8),
+            "local_remaining_size": round(float(remaining_size), 8),
+            "deal_id": str(pos.get("broker_trade_id") or ""),
+        }
 
         parent_snapshot = dict(pos)
         parent_snapshot["position_size"] = round(remaining_size, 8)
@@ -3010,8 +3221,10 @@ class TradingCore:
 
         now = time.monotonic()
         min_seconds = max(5.0, float(IG_TRAILING_STOP_MIN_UPDATE_SECONDS or 60.0))
+        failure_count = int(self._broker_stop_amend_failures.get(trade_id) or 0)
+        throttle_seconds = min_seconds if failure_count <= 0 else max(10.0, min(20.0, min_seconds / 3.0))
         last_attempt = float(self._broker_stop_amend_attempts.get(trade_id) or 0.0)
-        if last_attempt and now - last_attempt < min_seconds:
+        if last_attempt and now - last_attempt < throttle_seconds:
             return pos
         self._broker_stop_amend_attempts[trade_id] = now
 
@@ -3021,6 +3234,7 @@ class TradingCore:
             reason="IG Managed Trailing Stop",
         )
         if result and result.status == "FILLED":
+            self._broker_stop_amend_failures.pop(trade_id, None)
             metadata = dict(pos.get("metadata") or {})
             event = {
                 "source": "ig_active_management",
@@ -3047,6 +3261,7 @@ class TradingCore:
             return updated
 
         reason = getattr(result, "error", "no result") if result is not None else "no result"
+        self._broker_stop_amend_failures[trade_id] = min(10, failure_count + 1)
         logger.warning(f"[TradingCore] IG trailing stop amend failed {pos.get('asset')}: {reason}")
         self._notify_broker_issue(
             str(pos.get("asset") or "?"),
@@ -3463,6 +3678,14 @@ class TradingCore:
         return max(1, min(max(1, int(requested_limit or 1)), configured))
 
     def _execute_ranked_survivors(self, survivors: List[Signal], limit: int = 3) -> int:
+        manual_pause_reason = self._manual_pause_block_reason()
+        if manual_pause_reason:
+            now = time.monotonic()
+            if now - float(self._last_manual_pause_log or 0.0) >= 30.0:
+                self._last_manual_pause_log = now
+                logger.warning(f"[TradingCore] Broker execution paused: {manual_pause_reason}")
+            return 0
+
         startup_reason = self._broker_startup_execution_block_reason()
         if startup_reason:
             now = time.monotonic()
@@ -3537,6 +3760,14 @@ class TradingCore:
         flattened = self._flatten_positions_before_close()
         if flattened:
             logger.info(f"[TradingCore] Pre-close flatten closed {flattened} position(s)")
+
+        manual_pause_reason = self._manual_pause_block_reason()
+        if manual_pause_reason:
+            now = time.monotonic()
+            if now - float(self._last_manual_pause_log or 0.0) >= 30.0:
+                self._last_manual_pause_log = now
+                logger.warning(f"[TradingCore] Signal generation paused: {manual_pause_reason}")
+            return
 
         # Generate signals with per-asset contexts (Issues 2 & 9)
         signal_ctx_pairs = self._generate_signals()

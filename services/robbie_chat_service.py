@@ -53,7 +53,7 @@ _SESSION_FILE = Path("data/robbie_chat_sessions.json")
 _SESSION_FILE.parent.mkdir(exist_ok=True)
 _MAX_HISTORY_MESSAGES = max(2, int(ROBBIE_CHAT_HISTORY_LIMIT or 6)) * 2
 _ASSET_ALIAS_PATTERNS: List[Tuple[re.Pattern[str], str]] = []
-_RUNTIME_FACT_INTENTS = {"issues", "learning", "stop_loss", "adjustment", "market", "positions", "trade_why", "calendar", "weekly", "schedule", "logs", "codebase"}
+_RUNTIME_FACT_INTENTS = {"issues", "learning", "stop_loss", "adjustment", "market", "positions", "trade_why", "calendar", "weekly", "schedule", "logs", "codebase", "runtime_control"}
 _WORLD_KNOWLEDGE_INTENTS = {"general", "macro", "forecast", "market", "trade_why", "stop_loss", "learning", "adjustment", "calendar", "weekly"}
 _LOG_CONTEXT_TERMS = (
     "log",
@@ -1530,6 +1530,9 @@ class RobbieChatService:
 
     def _classify_intent(self, question: str) -> str:
         q = str(question or "").lower()
+        control_subject = any(token in q for token in ("bot", "trading", "engine", "entries", "new trades"))
+        if control_subject and any(token in q for token in ("pause", "resume", "stop", "halt", "close the bot", "turn off", "start again", "restart entries")):
+            return "runtime_control"
         weekday_schedule = any(f"every {name}" in q or f"each {name}" in q for name in _WEEKDAY_INDEX)
         if weekday_schedule or any(token in q for token in ("remind me", "set a reminder", "schedule", "daily at", "weekly at", "every day", "every week")):
             return "schedule"
@@ -1653,6 +1656,8 @@ class RobbieChatService:
             return self._logs_response(runtime)
         if intent == "codebase":
             return self._codebase_response(runtime)
+        if intent == "runtime_control":
+            return self._runtime_control_response(question, runtime)
         if intent == "issues":
             return self._issues_response(runtime)
         if intent == "learning":
@@ -1689,6 +1694,56 @@ class RobbieChatService:
             close = getattr(explainer, "close", None)
             if callable(close):
                 close()
+
+    @staticmethod
+    def _runtime_control_pause_until(question: str) -> Optional[datetime]:
+        q = str(question or "").lower()
+        match = re.search(r"\b(?:for\s+)?(\d+(?:\.\d+)?)\s*(hour|hours|hr|hrs|minute|minutes|min|mins)\b", q)
+        if not match:
+            return None
+        value = float(match.group(1))
+        unit = match.group(2)
+        seconds = value * 3600.0 if unit.startswith(("hour", "hr")) else value * 60.0
+        if seconds <= 0:
+            return None
+        return datetime.now(timezone.utc) + timedelta(seconds=seconds)
+
+    @classmethod
+    def _runtime_control_response(cls, question: str, runtime: Dict[str, Any]) -> str:
+        core = runtime.get("core")
+        if core is None:
+            return "I cannot reach the trading control bridge right now, so no control action was sent."
+
+        q = str(question or "").lower()
+        resume_requested = any(token in q for token in ("resume", "start again", "restart entries", "turn back on"))
+        if resume_requested:
+            resume_fn = getattr(core, "resume_trading", None)
+            if not callable(resume_fn):
+                return "The runtime snapshot is available, but this process does not expose a resume control hook."
+            result = resume_fn(source="robbie_chat")
+            if isinstance(result, dict) and not result.get("success", True):
+                return f"Resume command failed: {result.get('error') or result}"
+            return "Trading entries are resumed. Existing position management continues normally."
+
+        pause_requested = any(token in q for token in ("pause", "stop", "halt", "close the bot", "turn off"))
+        if pause_requested:
+            pause_fn = getattr(core, "pause_trading", None)
+            if not callable(pause_fn):
+                return "The runtime snapshot is available, but this process does not expose a pause control hook."
+            until = cls._runtime_control_pause_until(question)
+            result = pause_fn(
+                reason=f"Robbie chat command: {str(question or '').strip()[:160]}",
+                until=until,
+                source="robbie_chat",
+            )
+            if isinstance(result, dict) and not result.get("success", True):
+                return f"Pause command failed: {result.get('error') or result}"
+            if until is not None:
+                display_until = format_display_datetime(until)
+                return f"Trading entries are paused until {display_until}. Existing broker positions will still be managed for SL, TP, trailing stop, and reconciliation."
+            return "Trading entries are paused until you send Resume. Existing broker positions will still be managed for SL, TP, trailing stop, and reconciliation."
+
+        return "I understood this as a control request, but it did not clearly say pause or resume."
 
     @staticmethod
     def _issues_response(runtime: Dict[str, Any]) -> str:
@@ -2376,7 +2431,7 @@ class RobbieChatService:
         deterministic: str,
         intent: str,
     ) -> str:
-        if intent in {"calendar", "weekly", "schedule", "logs", "codebase"}:
+        if intent in {"calendar", "weekly", "schedule", "logs", "codebase", "runtime_control"}:
             return deterministic
         provider = str(ROBBIE_CHAT_PROVIDER or "auto").strip().lower()
         if provider not in {"auto", "deepseek"}:

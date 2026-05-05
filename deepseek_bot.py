@@ -4,12 +4,15 @@ import argparse
 import asyncio
 import hashlib
 import html
+import json
 import os
 import re
 import shutil
 import subprocess
 import tempfile
 import threading
+import time
+import uuid
 from pathlib import Path
 from typing import Any, Dict, Optional
 
@@ -163,6 +166,67 @@ class _SharedRuntimeTradingSystemProxy:
     def scan_top_ranked_opportunities(self, limit: int = 10) -> list[Dict[str, Any]]:
         return []
 
+    @staticmethod
+    def _command_response_key(request_id: str) -> str:
+        return f"DASHBOARD_COMMAND_RESPONSE:{request_id}"
+
+    def _send_runtime_command(self, action: str, payload: Dict[str, Any], *, timeout_seconds: float = 20.0) -> Dict[str, Any]:
+        request_id = uuid.uuid4().hex
+        command = {
+            "request_id": request_id,
+            "action": action,
+            "payload": payload,
+            "created_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+            "source": "deepseek_chat",
+        }
+        response_key = self._command_response_key(request_id)
+        client = None
+        dedicated_client = False
+        try:
+            from services.redis_pool import get_client, get_dedicated_client
+
+            client = get_dedicated_client(socket_timeout=1.0)
+            dedicated_client = client is not None
+            if client is None:
+                client = get_client()
+            if client is None:
+                return {"success": False, "error": "Redis command bridge unavailable"}
+            try:
+                client.delete(response_key)
+            except Exception:
+                pass
+            client.rpush("DASHBOARD_COMMAND_QUEUE", json.dumps(command, default=str))
+            deadline = time.monotonic() + max(1.0, float(timeout_seconds or 20.0))
+            while time.monotonic() < deadline:
+                raw = client.get(response_key)
+                if raw:
+                    try:
+                        client.delete(response_key)
+                    except Exception:
+                        pass
+                    response = json.loads(raw) if isinstance(raw, str) else json.loads(raw.decode("utf-8"))
+                    return response if isinstance(response, dict) else {"success": False, "error": "Invalid command response"}
+                time.sleep(0.15)
+            return {"success": False, "error": "TradingCore command bridge timed out"}
+        except Exception as exc:
+            return {"success": False, "error": str(exc)}
+        finally:
+            if dedicated_client and client is not None:
+                try:
+                    client.close()
+                except Exception:
+                    pass
+
+    def pause_trading(self, *, reason: str = "Robbie chat pause", until: Optional[Any] = None, source: str = "deepseek_chat") -> Dict[str, Any]:
+        until_utc = until.isoformat() if hasattr(until, "isoformat") else str(until or "")
+        return self._send_runtime_command(
+            "pause_trading",
+            {"reason": reason, "until_utc": until_utc, "source": source},
+        )
+
+    def resume_trading(self, *, source: str = "deepseek_chat") -> Dict[str, Any]:
+        return self._send_runtime_command("resume_trading", {"source": source})
+
 
 def _keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
@@ -315,7 +379,7 @@ class DeepSeekTelegramBot:
             "Use /chat or send me a message and I will answer as the trading bot speaking directly from current runtime context.\n"
             "Normal text questions use the live bot brain: positions, recent trades, current thinking, asset context, macro/news, logs, and code-path context when available.\n"
             "Image and chart questions use the attachment analyzer, including OCR text when available.\n"
-            "This chat does not expose live trade-control menus or controls.\n\n"
+            "You can also ask me to pause or resume new trading entries; existing broker position management stays active while paused.\n\n"
             "Use /reset to clear chat memory."
         )
 
