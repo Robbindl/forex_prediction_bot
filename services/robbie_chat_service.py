@@ -1528,10 +1528,34 @@ class RobbieChatService:
         lines.append("Treat that as a scenario outlook, not a promise.")
         return "\n".join(lines)
 
+    @staticmethod
+    def _looks_like_runtime_command(q: str) -> bool:
+        q = str(q or "").lower()
+        if not q:
+            return False
+        if any(token in q for token in ("reprice weak", "repricing weak", "reduce weak", "trim weak")):
+            return True
+        close_prefix = re.search(
+            r"^\s*(?:please\s+)?(?:(?:can|could|would)\s+you\s+|tell\s+(?:the\s+)?bot\s+to\s+|i\s+want\s+you\s+to\s+)?(?:close|flatten|liquidate)\b",
+            q,
+        )
+        if close_prefix:
+            if "button" in q or "buttons" in q:
+                return False
+            return True
+        return bool(
+            re.search(
+                r"\b(?:close|flatten|liquidate)\s+(?:all|everything|every|winning|losing|profitable|red|green|forex|fx|crypto|commodit(?:y|ies)|indices|indexes|index|positions?|trades?)\b",
+                q,
+            )
+        )
+
     def _classify_intent(self, question: str) -> str:
         q = str(question or "").lower()
         control_subject = any(token in q for token in ("bot", "trading", "engine", "entries", "new trades"))
         if control_subject and any(token in q for token in ("pause", "resume", "stop", "halt", "close the bot", "turn off", "start again", "restart entries")):
+            return "runtime_control"
+        if self._looks_like_runtime_command(q):
             return "runtime_control"
         weekday_schedule = any(f"every {name}" in q or f"each {name}" in q for name in _WEEKDAY_INDEX)
         if weekday_schedule or any(token in q for token in ("remind me", "set a reminder", "schedule", "daily at", "weekly at", "every day", "every week")):
@@ -1584,6 +1608,9 @@ class RobbieChatService:
                 "wrong",
                 "degraded",
                 "failing",
+                "not working",
+                "does not work",
+                "doesn't work",
                 "no trade",
                 "no trades",
                 "no signal",
@@ -1628,7 +1655,7 @@ class RobbieChatService:
             return "market"
         if any(token in q for token in ("open position", "running trade", "current trade", "current position", "what are you in")):
             return "positions"
-        if any(token in q for token in ("why did you choose", "why choose", "why this trade", "why take", "why did you buy", "why did you sell")):
+        if any(token in q for token in ("why did you choose", "why choose", "why this trade", "why take", "why did you buy", "why did you sell")) or re.search(r"\bwhy\s+did\b.*\bclose\b", q):
             return "trade_why"
         return "general"
 
@@ -1708,6 +1735,166 @@ class RobbieChatService:
             return None
         return datetime.now(timezone.utc) + timedelta(seconds=seconds)
 
+    @staticmethod
+    def _runtime_control_open_positions(runtime: Dict[str, Any]) -> List[Dict[str, Any]]:
+        rows: List[Dict[str, Any]] = []
+        for pos in list(runtime.get("positions") or []):
+            if not isinstance(pos, dict):
+                continue
+            status = str(pos.get("status") or "").strip().lower()
+            if status and status.startswith("closed"):
+                continue
+            rows.append(pos)
+        return rows
+
+    @staticmethod
+    def _runtime_control_requested_category(q: str) -> str:
+        q = str(q or "").lower()
+        if "forex" in q or re.search(r"\bfx\b", q):
+            return "forex"
+        if "crypto" in q or "coin" in q:
+            return "crypto"
+        if "commodit" in q or "gold" in q or "silver" in q or "oil" in q:
+            return "commodities"
+        if "indices" in q or "indexes" in q or re.search(r"\bindex\b", q):
+            return "indices"
+        return ""
+
+    @staticmethod
+    def _runtime_control_bulk_mode(q: str) -> Tuple[str, str]:
+        q = str(q or "").lower()
+        if any(token in q for token in ("losing", "loss", "red")):
+            return "losing", ""
+        if any(token in q for token in ("winning", "profit", "profitable", "green")):
+            return "winning", ""
+        category = RobbieChatService._runtime_control_requested_category(q)
+        if category:
+            return "category", category
+        if any(token in q for token in ("all", "everything", "every position", "all positions", "all trades")):
+            return "all", ""
+        return "", ""
+
+    @staticmethod
+    def _runtime_control_close_summary(result: Dict[str, Any], *, target: str) -> str:
+        if not isinstance(result, dict):
+            return f"Close command for {target} returned an invalid response."
+        closed = int(result.get("closed") or (1 if result.get("success") else 0) or 0)
+        skipped = int(result.get("skipped") or 0)
+        error = str(result.get("error") or "").strip()
+        if closed and skipped:
+            return f"Close command partially completed for {target}: closed {closed}, skipped {skipped}. Check the broker tab for any skipped position."
+        if closed:
+            return f"Close command completed for {target}: closed {closed} position(s)."
+        if result.get("success") and not skipped:
+            return f"Close command completed for {target}, but there were no matching open positions."
+        return f"Close command failed for {target}: {error or result.get('message') or 'no position was closed'}"
+
+    @classmethod
+    def _runtime_control_close_rows(cls, core: Any, rows: List[Dict[str, Any]], *, reason: str, target: str) -> str:
+        close_fn = getattr(core, "close_position_manually", None)
+        if not callable(close_fn):
+            return "The runtime snapshot is available, but this process does not expose a close-position control hook."
+        closed = 0
+        skipped: List[str] = []
+        for pos in rows:
+            trade_id = str(pos.get("trade_id") or "").strip()
+            asset = str(pos.get("asset") or pos.get("canonical_asset") or trade_id or "position")
+            if not trade_id:
+                skipped.append(f"{asset}: missing trade id")
+                continue
+            result = close_fn(trade_id, reason=reason)
+            if isinstance(result, dict) and result.get("success") is False:
+                skipped.append(f"{asset}: {result.get('error') or result.get('message') or 'close failed'}")
+                continue
+            if result:
+                closed += 1
+            else:
+                skipped.append(f"{asset}: close failed")
+        if closed and skipped:
+            return f"Close command partially completed for {target}: closed {closed}, skipped {len(skipped)}. First issue: {skipped[0]}"
+        if closed:
+            return f"Close command completed for {target}: closed {closed} position(s)."
+        if skipped:
+            return f"Close command failed for {target}: {skipped[0]}"
+        return f"No matching open positions found for {target}."
+
+    @classmethod
+    def _runtime_control_close_response(cls, question: str, runtime: Dict[str, Any]) -> str:
+        core = runtime.get("core")
+        q = str(question or "").lower()
+        positions = cls._runtime_control_open_positions(runtime)
+        reason = f"Robbie chat command: {str(question or '').strip()[:160]}"
+        bulk_mode, category = cls._runtime_control_bulk_mode(q)
+        bulk_fn = getattr(core, "close_positions_bulk", None)
+
+        if bulk_mode:
+            target = category if bulk_mode == "category" else bulk_mode
+            if callable(bulk_fn):
+                result = bulk_fn(mode=bulk_mode, category=category, reason=reason)
+                return cls._runtime_control_close_summary(result if isinstance(result, dict) else {}, target=target)
+            selected = positions
+            if bulk_mode == "category":
+                selected = [pos for pos in positions if str(pos.get("category") or "").strip().lower() == category]
+            elif bulk_mode == "losing":
+                selected = [pos for pos in positions if _coerce_float(pos.get("pnl"), 0.0) < 0]
+            elif bulk_mode == "winning":
+                selected = [pos for pos in positions if _coerce_float(pos.get("pnl"), 0.0) > 0]
+            return cls._runtime_control_close_rows(core, selected, reason=reason, target=target)
+
+        asset = _resolve_asset_from_text(question, "")
+        if asset:
+            target = registry.canonical(asset)
+            selected = [
+                pos
+                for pos in positions
+                if registry.canonical(str(pos.get("asset") or pos.get("canonical_asset") or "")) == target
+            ]
+            if not selected:
+                return f"No open {target} position is visible in the runtime snapshot."
+            return cls._runtime_control_close_rows(core, selected, reason=reason, target=target)
+
+        if len(positions) == 1 and re.search(r"\b(?:close|flatten|liquidate)\s+(?:the\s+)?(?:position|trade)\b", q):
+            asset = str(positions[0].get("asset") or positions[0].get("canonical_asset") or "the only open position")
+            return cls._runtime_control_close_rows(core, positions, reason=reason, target=asset)
+
+        return "I can close positions, but this command needs a target: an asset, all positions, winners, losers, or a category."
+
+    @staticmethod
+    def _runtime_control_reprice_response(core: Any) -> str:
+        reprice_fn = getattr(core, "reprice_weak_exits", None)
+        if not callable(reprice_fn):
+            return "The runtime snapshot is available, but this process does not expose the weak-exit repricing hook."
+        result = reprice_fn(limit=3, score_threshold=0.62, tighten_only=True)
+        if isinstance(result, dict):
+            if not result.get("success", True):
+                return f"Weak-exit repricing failed: {result.get('error') or result}"
+            updates = list(result.get("updates") or [])
+        else:
+            updates = list(result or [])
+        if not updates:
+            return "No weak exits needed repricing right now."
+        return f"Weak-exit repricing completed: updated {len(updates)} position(s)."
+
+    @staticmethod
+    def _runtime_control_reduce_response(core: Any) -> str:
+        reduce_fn = getattr(core, "reduce_weak_positions", None)
+        if not callable(reduce_fn):
+            return "The runtime snapshot is available, but this process does not expose the weak-position reduction hook."
+        result = reduce_fn(limit=3, score_threshold=0.58, reduction_fraction=0.35)
+        if isinstance(result, dict):
+            if not result.get("success", True) and not result.get("partial_success"):
+                return f"Weak-position reduction failed: {result.get('error') or result}"
+            actions = list(result.get("actions") or [])
+        else:
+            actions = list(result or [])
+        reduced = sum(1 for row in actions if bool(row.get("success")))
+        skipped = len(actions) - reduced
+        if not actions:
+            return "No weak positions qualified for reduction right now."
+        if skipped:
+            return f"Weak-position reduction partially completed: reduced {reduced}, skipped {skipped}."
+        return f"Weak-position reduction completed: reduced {reduced} position(s)."
+
     @classmethod
     def _runtime_control_response(cls, question: str, runtime: Dict[str, Any]) -> str:
         core = runtime.get("core")
@@ -1725,7 +1912,21 @@ class RobbieChatService:
                 return f"Resume command failed: {result.get('error') or result}"
             return "Trading entries are resumed. Existing position management continues normally."
 
-        pause_requested = any(token in q for token in ("pause", "stop", "halt", "close the bot", "turn off"))
+        pause_requested = any(
+            token in q
+            for token in (
+                "pause",
+                "stop trading",
+                "stop entries",
+                "stop new trades",
+                "halt trading",
+                "halt entries",
+                "halt the bot",
+                "stop the bot",
+                "close the bot",
+                "turn off",
+            )
+        )
         if pause_requested:
             pause_fn = getattr(core, "pause_trading", None)
             if not callable(pause_fn):
@@ -1743,7 +1944,16 @@ class RobbieChatService:
                 return f"Trading entries are paused until {display_until}. Existing broker positions will still be managed for SL, TP, trailing stop, and reconciliation."
             return "Trading entries are paused until you send Resume. Existing broker positions will still be managed for SL, TP, trailing stop, and reconciliation."
 
-        return "I understood this as a control request, but it did not clearly say pause or resume."
+        if "reprice weak" in q or "repricing weak" in q:
+            return cls._runtime_control_reprice_response(core)
+
+        if "reduce weak" in q or "trim weak" in q:
+            return cls._runtime_control_reduce_response(core)
+
+        if re.search(r"\b(?:close|flatten|liquidate)\b", q):
+            return cls._runtime_control_close_response(question, runtime)
+
+        return "I understood this as a control request, but it needs a specific safe bot command: pause, resume, close, reprice weak, or reduce weak."
 
     @staticmethod
     def _issues_response(runtime: Dict[str, Any]) -> str:

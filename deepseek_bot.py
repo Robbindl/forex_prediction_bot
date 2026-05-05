@@ -227,6 +227,56 @@ class _SharedRuntimeTradingSystemProxy:
     def resume_trading(self, *, source: str = "deepseek_chat") -> Dict[str, Any]:
         return self._send_runtime_command("resume_trading", {"source": source})
 
+    def close_position_manually(self, trade_id: str, *, reason: str = "Robbie chat close") -> Dict[str, Any]:
+        return self._send_runtime_command(
+            "close_position",
+            {"trade_id": trade_id, "reason": reason},
+        )
+
+    def close_positions_bulk(
+        self,
+        *,
+        mode: str = "all",
+        category: str = "",
+        reason: str = "Robbie chat bulk close",
+    ) -> Dict[str, Any]:
+        return self._send_runtime_command(
+            "close_positions_bulk",
+            {"mode": mode, "category": category, "reason": reason},
+        )
+
+    def reprice_weak_exits(
+        self,
+        *,
+        limit: int = 3,
+        score_threshold: float = 0.62,
+        tighten_only: bool = True,
+    ) -> Dict[str, Any]:
+        return self._send_runtime_command(
+            "reprice_weak_exits",
+            {
+                "limit": limit,
+                "score_threshold": score_threshold,
+                "tighten_only": tighten_only,
+            },
+        )
+
+    def reduce_weak_positions(
+        self,
+        *,
+        limit: int = 3,
+        score_threshold: float = 0.58,
+        reduction_fraction: float = 0.35,
+    ) -> Dict[str, Any]:
+        return self._send_runtime_command(
+            "reduce_weak_positions",
+            {
+                "limit": limit,
+                "score_threshold": score_threshold,
+                "reduction_fraction": reduction_fraction,
+            },
+        )
+
 
 def _keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(

@@ -2504,6 +2504,21 @@ class TradingCore:
             "message": f"Closed {len(closed)} position(s), skipped {len(skipped)}",
         }
 
+    def close_positions_bulk(
+        self,
+        *,
+        mode: str = "all",
+        category: str = "",
+        reason: str = "Bulk Close",
+    ) -> Dict[str, Any]:
+        return self._dashboard_close_bulk_command(
+            {
+                "mode": mode,
+                "category": category,
+                "reason": reason,
+            }
+        )
+
     def _dashboard_pause_trading_command(self, payload: Dict[str, Any]) -> Dict[str, Any]:
         until = payload.get("until_utc") or payload.get("until")
         result = self.pause_trading(
@@ -2519,6 +2534,35 @@ class TradingCore:
         result["message"] = "Trading resumed"
         return result
 
+    def _dashboard_reprice_weak_command(self, payload: Dict[str, Any]) -> Dict[str, Any]:
+        updates = self.reprice_weak_exits(
+            tighten_only=bool(payload.get("tighten_only", True)),
+            limit=int(payload.get("limit") or 3),
+            score_threshold=float(payload.get("score_threshold") or 0.62),
+        )
+        return {
+            "success": True,
+            "updated": len(updates),
+            "updates": updates,
+            "message": f"Repriced {len(updates)} weak position(s)",
+        }
+
+    def _dashboard_reduce_weak_command(self, payload: Dict[str, Any]) -> Dict[str, Any]:
+        actions = self.reduce_weak_positions(
+            reduction_fraction=float(payload.get("reduction_fraction") or 0.35),
+            limit=int(payload.get("limit") or 3),
+            score_threshold=float(payload.get("score_threshold") or 0.58),
+        )
+        failed = [row for row in actions if not bool(row.get("success"))]
+        return {
+            "success": not failed,
+            "partial_success": bool(actions and failed),
+            "actions": actions,
+            "reduced": sum(1 for row in actions if bool(row.get("success"))),
+            "skipped": len(failed),
+            "message": f"Reduced {sum(1 for row in actions if bool(row.get('success')))} weak position(s), skipped {len(failed)}",
+        }
+
     def _handle_dashboard_command(self, command: Dict[str, Any]) -> Dict[str, Any]:
         action = str(command.get("action") or "").strip().lower()
         payload = command.get("payload") if isinstance(command.get("payload"), dict) else {}
@@ -2532,6 +2576,10 @@ class TradingCore:
             return self._dashboard_pause_trading_command(payload)
         if action == "resume_trading":
             return self._dashboard_resume_trading_command(payload)
+        if action == "reprice_weak_exits":
+            return self._dashboard_reprice_weak_command(payload)
+        if action == "reduce_weak_positions":
+            return self._dashboard_reduce_weak_command(payload)
         return {"success": False, "error": f"Unsupported dashboard command: {action or 'unknown'}"}
 
     def _dashboard_command_loop(self) -> None:
