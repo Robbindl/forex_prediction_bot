@@ -1533,6 +1533,14 @@ class RobbieChatService:
         q = str(q or "").lower()
         if not q:
             return False
+        if any(token in q for token in ("cancel rule", "cancel rules", "cancel command", "cancel commands", "pending command", "pending rule", "agent rule")) or re.search(r"\bcancel\b.*\b(?:rules?|commands?)\b", q):
+            return True
+        if (
+            re.search(r"\b(?:when|if|once)\b.*\b(?:close|flatten|liquidate|reduce|trim)\b", q)
+            or re.search(r"\b(?:close|flatten|liquidate|reduce|trim)\b.*\b(?:when|if|once)\b", q)
+            or re.search(r"\b(?:close|flatten|liquidate|reduce|trim)\b.*\b(?:at|above|below|under|over|reaches|hits|touches)\s+\d", q)
+        ):
+            return True
         if any(token in q for token in ("reprice weak", "repricing weak", "reduce weak", "trim weak")):
             return True
         close_prefix = re.search(
@@ -1895,6 +1903,183 @@ class RobbieChatService:
             return f"Weak-position reduction partially completed: reduced {reduced}, skipped {skipped}."
         return f"Weak-position reduction completed: reduced {reduced} position(s)."
 
+    @staticmethod
+    def _runtime_control_parse_close_fraction(q: str) -> float:
+        q = str(q or "").lower()
+        if re.search(r"\b(?:close|flatten|liquidate)\s+(?:all|everything)\b", q):
+            return 1.0
+        if re.search(r"\b(?:close|reduce|trim)\s+half\b", q):
+            return 0.5
+        if re.search(r"\b(?:close|reduce|trim)\s+(?:a\s+)?quarter\b", q):
+            return 0.25
+        if re.search(r"\b(?:close|reduce|trim)\s+(?:a\s+)?third\b", q):
+            return 1.0 / 3.0
+        match = re.search(r"\b(?:close|reduce|trim)\s+(?:by\s+)?(\d+(?:\.\d+)?)\s*(?:%|\bpercent\b)", q)
+        if match:
+            return max(0.01, min(1.0, float(match.group(1)) / 100.0))
+        return 1.0
+
+    @staticmethod
+    def _runtime_control_position_price(pos: Dict[str, Any]) -> float:
+        return _coerce_float(pos.get("current_price"), 0.0) or _coerce_float(pos.get("entry_price"), 0.0)
+
+    @classmethod
+    def _runtime_control_rule_target(cls, question: str, runtime: Dict[str, Any]) -> Tuple[Dict[str, Any], str]:
+        q = str(question or "").lower()
+        positions = cls._runtime_control_open_positions(runtime)
+        category = cls._runtime_control_requested_category(q)
+        if any(token in q for token in ("all positions", "all trades", "everything")):
+            return {"type": "all"}, "all open positions"
+        if category and not _resolve_asset_from_text(question, ""):
+            return {"type": "category", "category": category}, category
+
+        asset = _resolve_asset_from_text(question, "")
+        if asset:
+            canonical = registry.canonical(asset)
+            matches = [
+                pos
+                for pos in positions
+                if registry.canonical(str(pos.get("asset") or pos.get("canonical_asset") or "")) == canonical
+            ]
+            if len(matches) == 1:
+                return {
+                    "type": "trade_id",
+                    "trade_id": str(matches[0].get("trade_id") or ""),
+                    "asset": canonical,
+                }, canonical
+            return {"type": "asset", "asset": canonical}, canonical
+
+        if len(positions) == 1:
+            pos = positions[0]
+            asset = registry.canonical(str(pos.get("asset") or pos.get("canonical_asset") or ""))
+            return {
+                "type": "trade_id",
+                "trade_id": str(pos.get("trade_id") or ""),
+                "asset": asset,
+            }, asset or "the only open position"
+
+        return {}, ""
+
+    @classmethod
+    def _runtime_control_parse_condition(
+        cls,
+        question: str,
+        runtime: Dict[str, Any],
+        target: Dict[str, Any],
+    ) -> Tuple[Dict[str, Any], str]:
+        q = str(question or "").lower()
+        positions = cls._runtime_control_open_positions(runtime)
+        target_price = 0.0
+        if target.get("type") == "trade_id":
+            trade_id = str(target.get("trade_id") or "")
+            for pos in positions:
+                if str(pos.get("trade_id") or "") == trade_id:
+                    target_price = cls._runtime_control_position_price(pos)
+                    break
+        elif target.get("asset"):
+            canonical = registry.canonical(str(target.get("asset") or ""))
+            for pos in positions:
+                if registry.canonical(str(pos.get("asset") or pos.get("canonical_asset") or "")) == canonical:
+                    target_price = cls._runtime_control_position_price(pos)
+                    break
+
+        for match in re.finditer(r"(\d+(?:\.\d+)?)\s*(?:%|\bpercent\b)", q):
+            value = float(match.group(1))
+            prefix = q[max(0, match.start() - 16): match.start()]
+            if re.search(r"\b(?:close|reduce|trim)\s*$", prefix):
+                continue
+            context = q[max(0, match.start() - 36): match.end() + 36]
+            if re.search(r"\b(?:profit|gain|up|green|pnl|p/l)\b", context):
+                return {"type": "pnl_pct_at_least", "value": value}, f"trade move/P&L is at least +{value:g}%"
+            if re.search(r"\b(?:loss|down|red|drawdown)\b", context):
+                return {"type": "pnl_pct_at_most", "value": -abs(value)}, f"trade move/P&L is at most -{value:g}%"
+
+        amount_match = re.search(r"(?:\$|usd\s*)?(-?\d+(?:\.\d+)?)\s*(?:dollars?|usd)?\s*(profit|gain|loss|drawdown)", q)
+        if amount_match:
+            amount = abs(float(amount_match.group(1)))
+            word = amount_match.group(2)
+            if word in {"loss", "drawdown"}:
+                return {"type": "pnl_amount_at_most", "value": -amount}, f"floating P/L is at most -${amount:g}"
+            return {"type": "pnl_amount_at_least", "value": amount}, f"floating P/L is at least +${amount:g}"
+
+        price_match = re.search(
+            r"\b(?:price\s+)?(?:reaches|reach|hits|hit|touches|touch|gets\s+to|goes\s+to|above|over|below|under|at)\s+(\d+(?:\.\d+)?)\b",
+            q,
+        )
+        if not price_match:
+            price_match = re.search(r"\b(\d+\.\d+)\b", q)
+        if price_match:
+            level = float(price_match.group(1))
+            context = q[max(0, price_match.start() - 24): price_match.end() + 24]
+            if re.search(r"\b(?:above|over)\b", context):
+                return {"type": "price_at_or_above", "value": level}, f"price is at or above {level:g}"
+            if re.search(r"\b(?:below|under)\b", context):
+                return {"type": "price_at_or_below", "value": level}, f"price is at or below {level:g}"
+            direction = "price_at_or_above" if target_price <= 0.0 or level >= target_price else "price_at_or_below"
+            label = "at or above" if direction == "price_at_or_above" else "at or below"
+            return {"type": direction, "value": level}, f"price is {label} {level:g}"
+
+        return {}, ""
+
+    @classmethod
+    def _runtime_control_agent_rule_response(cls, question: str, runtime: Dict[str, Any]) -> str:
+        core = runtime.get("core")
+        register_fn = getattr(core, "register_agent_rule", None)
+        if not callable(register_fn):
+            return "The runtime snapshot is available, but this process does not expose the agent-rule command hook."
+
+        q = str(question or "").lower()
+        if any(token in q for token in ("cancel rule", "cancel rules", "cancel command", "cancel commands")) or re.search(r"\bcancel\b.*\b(?:rules?|commands?)\b", q):
+            cancel_fn = getattr(core, "cancel_agent_rules", None)
+            if not callable(cancel_fn):
+                return "The runtime snapshot is available, but this process does not expose the agent-rule cancel hook."
+            result = cancel_fn(all_rules=True)
+            if isinstance(result, dict) and not result.get("success", True):
+                return f"Agent-rule cancel failed: {result.get('error') or result}"
+            return f"Cancelled {int(result.get('cancelled', 0) or 0)} pending agent rule(s)."
+
+        if any(token in q for token in ("pending rule", "pending rules", "pending command", "pending commands", "list rules", "show rules")):
+            list_fn = getattr(core, "list_agent_rules", None)
+            if not callable(list_fn):
+                return "The runtime snapshot is available, but this process does not expose the agent-rule list hook."
+            result = list_fn(active_only=True)
+            if isinstance(result, dict) and not result.get("success", True):
+                return f"Agent-rule list failed: {result.get('error') or result}"
+            rules = list(result.get("rules") or []) if isinstance(result, dict) else []
+            if not rules:
+                return "There are no pending agent rules."
+            lines = [f"Pending agent rules: {len(rules)}"]
+            for rule in rules[:5]:
+                lines.append(f"- {rule.get('id')}: {rule.get('description') or rule.get('raw_command') or 'agent rule'}")
+            return "\n".join(lines)
+
+        target, target_label = cls._runtime_control_rule_target(question, runtime)
+        if not target:
+            return "I can create that as an agent rule, but I need a target: an asset, one open position, a category, or all positions."
+        condition, condition_label = cls._runtime_control_parse_condition(question, runtime, target)
+        if not condition:
+            return "I can create that as an agent rule, but I need a trigger condition like a price level, profit %, loss %, or P/L amount."
+        if condition["type"].startswith("price_") and target.get("type") in {"all", "category"}:
+            return "A price-level rule needs one asset or one open position. Use P/L percent or P/L amount for all/category rules."
+
+        fraction = cls._runtime_control_parse_close_fraction(q)
+        action_type = "close" if fraction >= 0.999 else "partial_close"
+        action_label = "close fully" if fraction >= 0.999 else f"close {fraction * 100:.0f}%"
+        rule = {
+            "raw_command": str(question or "").strip(),
+            "description": f"{target_label}: when {condition_label}, {action_label}",
+            "source": "robbie_chat",
+            "target": target,
+            "condition": condition,
+            "action": {"type": action_type, "fraction": fraction},
+        }
+        result = register_fn(rule)
+        if isinstance(result, dict) and not result.get("success", True):
+            return f"Agent-rule registration failed: {result.get('error') or result}"
+        saved = result.get("rule") if isinstance(result, dict) else rule
+        rule_id = str(saved.get("id") or "new rule") if isinstance(saved, dict) else "new rule"
+        return f"Agent rule armed: {rule['description']}. Rule id: {rule_id}."
+
     @classmethod
     def _runtime_control_response(cls, question: str, runtime: Dict[str, Any]) -> str:
         core = runtime.get("core")
@@ -1902,6 +2087,16 @@ class RobbieChatService:
             return "I cannot reach the trading control bridge right now, so no control action was sent."
 
         q = str(question or "").lower()
+        if (
+            re.search(r"\b(?:when|if|once)\b.*\b(?:close|flatten|liquidate|reduce|trim)\b", q)
+            or re.search(r"\b(?:close|flatten|liquidate|reduce|trim)\b.*\b(?:when|if|once)\b", q)
+            or re.search(r"\b(?:close|flatten|liquidate|reduce|trim)\b.*\b(?:at|above|below|under|over|reaches|hits|touches)\s+\d", q)
+            or any(token in q for token in ("cancel rule", "cancel rules", "cancel command", "cancel commands"))
+            or re.search(r"\bcancel\b.*\b(?:rules?|commands?)\b", q)
+            or any(token in q for token in ("pending rule", "pending rules", "pending command", "pending commands", "list rules", "show rules"))
+        ):
+            return cls._runtime_control_agent_rule_response(question, runtime)
+
         resume_requested = any(token in q for token in ("resume", "start again", "restart entries", "turn back on"))
         if resume_requested:
             resume_fn = getattr(core, "resume_trading", None)

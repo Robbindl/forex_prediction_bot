@@ -277,6 +277,18 @@ class _SharedRuntimeTradingSystemProxy:
             },
         )
 
+    def register_agent_rule(self, rule: Dict[str, Any]) -> Dict[str, Any]:
+        return self._send_runtime_command("register_agent_rule", {"rule": rule})
+
+    def list_agent_rules(self, *, active_only: bool = True) -> Dict[str, Any]:
+        return self._send_runtime_command("list_agent_rules", {"active_only": active_only})
+
+    def cancel_agent_rules(self, *, rule_id: str = "", all_rules: bool = False) -> Dict[str, Any]:
+        return self._send_runtime_command(
+            "cancel_agent_rules",
+            {"rule_id": rule_id, "all_rules": all_rules, "all": all_rules},
+        )
+
 
 def _keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(

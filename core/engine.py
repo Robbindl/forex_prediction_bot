@@ -7,6 +7,7 @@ import json
 import os
 import threading
 import time
+import uuid
 from collections import Counter
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -77,6 +78,7 @@ COMMAND_CENTER_CONTEXT_LOG_LIMIT = 199
 DASHBOARD_COMMAND_QUEUE = "DASHBOARD_COMMAND_QUEUE"
 DASHBOARD_COMMAND_RESPONSE_PREFIX = "DASHBOARD_COMMAND_RESPONSE:"
 DASHBOARD_COMMAND_RESPONSE_TTL_SECONDS = 90
+TRADING_AGENT_RULES_PATH = Path("data/runtime_locks/trading_agent_rules.json")
 
 
 def _get_news_event(category: str) -> dict:
@@ -255,6 +257,7 @@ class TradingCore:
         self._broker_stop_amend_attempts: Dict[str, float] = {}
         self._broker_stop_amend_failures: Dict[str, int] = {}
         self._last_manual_pause_log = 0.0
+        self._agent_rule_lock = threading.RLock()
         self._dashboard_command_listener_started = False
         self._dashboard_command_thread: Optional[threading.Thread] = None
 
@@ -2519,6 +2522,198 @@ class TradingCore:
             }
         )
 
+    def _load_agent_rules(self) -> List[Dict[str, Any]]:
+        with self._agent_rule_lock:
+            try:
+                if not TRADING_AGENT_RULES_PATH.exists():
+                    return []
+                raw = json.loads(TRADING_AGENT_RULES_PATH.read_text(encoding="utf-8"))
+                if isinstance(raw, dict):
+                    raw = raw.get("rules", [])
+                return [dict(item) for item in list(raw or []) if isinstance(item, dict)]
+            except Exception as exc:
+                logger.warning(f"[TradingCore] Agent rule load failed: {exc}")
+                return []
+
+    def _save_agent_rules(self, rules: List[Dict[str, Any]]) -> None:
+        with self._agent_rule_lock:
+            try:
+                TRADING_AGENT_RULES_PATH.parent.mkdir(parents=True, exist_ok=True)
+                payload = {
+                    "updated_at": datetime.now(timezone.utc).isoformat(),
+                    "rules": list(rules or []),
+                }
+                TRADING_AGENT_RULES_PATH.write_text(json.dumps(payload, indent=2, default=str), encoding="utf-8")
+            except Exception as exc:
+                logger.warning(f"[TradingCore] Agent rule save failed: {exc}")
+
+    def register_agent_rule(self, rule: Dict[str, Any]) -> Dict[str, Any]:
+        if not isinstance(rule, dict):
+            return {"success": False, "error": "agent rule must be an object"}
+        target = rule.get("target") if isinstance(rule.get("target"), dict) else {}
+        condition = rule.get("condition") if isinstance(rule.get("condition"), dict) else {}
+        action = rule.get("action") if isinstance(rule.get("action"), dict) else {}
+        if not target or not condition or not action:
+            return {"success": False, "error": "agent rule requires target, condition, and action"}
+
+        normalized = dict(rule)
+        normalized["id"] = str(rule.get("id") or f"rule-{uuid.uuid4().hex[:10]}")
+        normalized["created_at"] = str(rule.get("created_at") or datetime.now(timezone.utc).isoformat())
+        normalized["updated_at"] = datetime.now(timezone.utc).isoformat()
+        normalized["status"] = "active"
+        normalized["trigger_count"] = int(rule.get("trigger_count", 0) or 0)
+        normalized["target"] = dict(target)
+        normalized["condition"] = dict(condition)
+        normalized["action"] = dict(action)
+
+        rules = self._load_agent_rules()
+        rules = [item for item in rules if str(item.get("id") or "") != normalized["id"]]
+        rules.append(normalized)
+        self._save_agent_rules(rules)
+        logger.info(
+            f"[TradingCore] Agent rule registered {normalized['id']}: "
+            f"{normalized.get('description') or normalized.get('raw_command') or normalized['condition']}"
+        )
+        return {"success": True, "rule": normalized, "message": "Agent rule registered"}
+
+    def list_agent_rules(self, *, active_only: bool = True) -> Dict[str, Any]:
+        rules = self._load_agent_rules()
+        if active_only:
+            rules = [rule for rule in rules if str(rule.get("status") or "active") == "active"]
+        return {"success": True, "rules": rules, "count": len(rules)}
+
+    def cancel_agent_rules(self, *, rule_id: str = "", all_rules: bool = False) -> Dict[str, Any]:
+        rules = self._load_agent_rules()
+        cancelled = 0
+        now = datetime.now(timezone.utc).isoformat()
+        for rule in rules:
+            if str(rule.get("status") or "active") != "active":
+                continue
+            if all_rules or (rule_id and str(rule.get("id") or "") == str(rule_id)):
+                rule["status"] = "cancelled"
+                rule["cancelled_at"] = now
+                rule["updated_at"] = now
+                cancelled += 1
+        self._save_agent_rules(rules)
+        return {"success": True, "cancelled": cancelled, "message": f"Cancelled {cancelled} agent rule(s)"}
+
+    def _agent_rule_position_matches(self, rule: Dict[str, Any], pos: Dict[str, Any]) -> bool:
+        target = rule.get("target") if isinstance(rule.get("target"), dict) else {}
+        target_type = str(target.get("type") or "asset").strip().lower()
+        if target_type == "all":
+            return True
+        if target_type == "trade_id":
+            return str(pos.get("trade_id") or "") == str(target.get("trade_id") or "")
+        if target_type == "category":
+            return str(pos.get("category") or "").strip().lower() == str(target.get("category") or "").strip().lower()
+        asset = str(target.get("asset") or "")
+        if asset:
+            return self.registry.canonical(str(pos.get("asset") or pos.get("canonical_asset") or "")) == self.registry.canonical(asset)
+        return False
+
+    def _agent_rule_metric_snapshot(self, pos: Dict[str, Any], prices: Dict[str, float]) -> Dict[str, float]:
+        entry = self._normalize_position_price(pos, pos.get("entry_price"))
+        current = self._broker_position_live_price(pos, prices)
+        direction = str(pos.get("direction") or pos.get("signal") or "BUY").upper()
+        if entry <= 0.0 or current <= 0.0:
+            move_pct = 0.0
+        elif direction == "SELL":
+            move_pct = ((entry - current) / entry) * 100.0
+        else:
+            move_pct = ((current - entry) / entry) * 100.0
+        pnl_amount = self._broker_position_floating_pnl(pos, prices)
+        return {
+            "entry": entry,
+            "current_price": current,
+            "move_pct": move_pct,
+            "pnl_amount": pnl_amount,
+        }
+
+    def _agent_rule_condition_triggered(
+        self,
+        rule: Dict[str, Any],
+        pos: Dict[str, Any],
+        prices: Dict[str, float],
+    ) -> Tuple[bool, Dict[str, float]]:
+        condition = rule.get("condition") if isinstance(rule.get("condition"), dict) else {}
+        kind = str(condition.get("type") or "").strip().lower()
+        value = self._float_or_zero(condition.get("value"))
+        metrics = self._agent_rule_metric_snapshot(pos, prices)
+        current = metrics["current_price"]
+        if kind == "price_at_or_above":
+            return current >= value > 0.0, metrics
+        if kind == "price_at_or_below":
+            return 0.0 < current <= value, metrics
+        if kind == "pnl_pct_at_least":
+            return metrics["move_pct"] >= value, metrics
+        if kind == "pnl_pct_at_most":
+            return metrics["move_pct"] <= value, metrics
+        if kind == "pnl_amount_at_least":
+            return metrics["pnl_amount"] >= value, metrics
+        if kind == "pnl_amount_at_most":
+            return metrics["pnl_amount"] <= value, metrics
+        return False, metrics
+
+    def _execute_agent_rule(
+        self,
+        rule: Dict[str, Any],
+        pos: Dict[str, Any],
+        metrics: Dict[str, float],
+    ) -> Tuple[bool, str]:
+        action = rule.get("action") if isinstance(rule.get("action"), dict) else {}
+        action_type = str(action.get("type") or "close").strip().lower()
+        fraction = max(0.01, min(1.0, self._float_or_zero(action.get("fraction")) or 1.0))
+        trade_id = str(pos.get("trade_id") or "")
+        if not trade_id:
+            return False, "matched position has no trade id"
+        reason = str(rule.get("description") or rule.get("raw_command") or "Agent command rule")
+        reason = f"Agent Rule: {reason[:160]}"
+        if action_type in {"close", "flatten"} or fraction >= 0.999:
+            result = self.close_position_manually(trade_id, reason=reason)
+            return bool(result), "closed" if result else "close failed"
+        if action_type in {"partial_close", "reduce", "trim"}:
+            result = self.partial_close_position_manually(trade_id, fraction=fraction, reason=reason)
+            return bool(result and result.get("success")), "partial closed" if result else "partial close failed"
+        return False, f"unsupported action {action_type}"
+
+    def _enforce_agent_trading_rules(self, prices: Dict[str, float]) -> None:
+        rules = self._load_agent_rules()
+        active = [rule for rule in rules if str(rule.get("status") or "active") == "active"]
+        if not active:
+            return
+        positions = list(self.state.get_open_positions() or [])
+        changed = False
+        now = datetime.now(timezone.utc).isoformat()
+        for rule in active:
+            for raw_pos in positions:
+                if not self._agent_rule_position_matches(rule, raw_pos):
+                    continue
+                pos = self._normalize_broker_position_prices(raw_pos) if self._is_broker_managed_position(raw_pos) else dict(raw_pos)
+                triggered, metrics = self._agent_rule_condition_triggered(rule, pos, prices)
+                if not triggered:
+                    continue
+                success, message = self._execute_agent_rule(rule, pos, metrics)
+                rule["trigger_count"] = int(rule.get("trigger_count", 0) or 0) + 1
+                rule["last_triggered_at"] = now
+                rule["last_result"] = message
+                rule["last_metrics"] = {key: round(float(value), 8) for key, value in metrics.items()}
+                rule["updated_at"] = now
+                if success:
+                    rule["status"] = "completed"
+                    rule["completed_at"] = now
+                    logger.info(f"[TradingCore] Agent rule {rule.get('id')} completed: {message}")
+                else:
+                    logger.warning(f"[TradingCore] Agent rule {rule.get('id')} failed: {message}")
+                changed = True
+                break
+        if changed:
+            by_id = {str(rule.get("id") or ""): rule for rule in rules}
+            for rule in active:
+                rule_id = str(rule.get("id") or "")
+                if rule_id:
+                    by_id[rule_id] = rule
+            self._save_agent_rules(list(by_id.values()))
+
     def _dashboard_pause_trading_command(self, payload: Dict[str, Any]) -> Dict[str, Any]:
         until = payload.get("until_utc") or payload.get("until")
         result = self.pause_trading(
@@ -2563,6 +2758,16 @@ class TradingCore:
             "message": f"Reduced {sum(1 for row in actions if bool(row.get('success')))} weak position(s), skipped {len(failed)}",
         }
 
+    def _dashboard_register_agent_rule_command(self, payload: Dict[str, Any]) -> Dict[str, Any]:
+        rule = payload.get("rule") if isinstance(payload.get("rule"), dict) else payload
+        return self.register_agent_rule(rule)
+
+    def _dashboard_cancel_agent_rules_command(self, payload: Dict[str, Any]) -> Dict[str, Any]:
+        return self.cancel_agent_rules(
+            rule_id=str(payload.get("rule_id") or "").strip(),
+            all_rules=bool(payload.get("all") or payload.get("all_rules")),
+        )
+
     def _handle_dashboard_command(self, command: Dict[str, Any]) -> Dict[str, Any]:
         action = str(command.get("action") or "").strip().lower()
         payload = command.get("payload") if isinstance(command.get("payload"), dict) else {}
@@ -2580,6 +2785,12 @@ class TradingCore:
             return self._dashboard_reprice_weak_command(payload)
         if action == "reduce_weak_positions":
             return self._dashboard_reduce_weak_command(payload)
+        if action == "register_agent_rule":
+            return self._dashboard_register_agent_rule_command(payload)
+        if action == "list_agent_rules":
+            return self.list_agent_rules(active_only=bool(payload.get("active_only", True)))
+        if action == "cancel_agent_rules":
+            return self._dashboard_cancel_agent_rules_command(payload)
         return {"success": False, "error": f"Unsupported dashboard command: {action or 'unknown'}"}
 
     def _dashboard_command_loop(self) -> None:
@@ -2694,6 +2905,9 @@ class TradingCore:
         total_tiers: int,
         partial_size: float,
         broker_result: Any,
+        exit_reason: Optional[str] = None,
+        source: str = "ig_active_management",
+        advance_tp: bool = True,
     ) -> None:
         trade_id = str(pos.get("trade_id") or "")
         entry = self._normalize_position_price(pos, pos.get("entry_price"))
@@ -2723,7 +2937,7 @@ class TradingCore:
             "local_close_size": round(float(partial_size), 8),
             "broker_close_size": round(float(broker_close_size), 8),
             "closed_at": datetime.now(timezone.utc).isoformat(),
-            "source": "ig_active_management",
+            "source": source,
         }
         events = metadata.get("broker_tp_events") if isinstance(metadata.get("broker_tp_events"), list) else []
         metadata["broker_tp_events"] = list(events)[-10:] + [broker_tp_note]
@@ -2738,7 +2952,8 @@ class TradingCore:
         parent_snapshot = dict(pos)
         parent_snapshot["position_size"] = round(remaining_size, 8)
         parent_snapshot["broker_position_size"] = round(broker_remaining_size, 8)
-        parent_snapshot["tp_hit"] = int(tp_idx + 1)
+        if advance_tp:
+            parent_snapshot["tp_hit"] = int(tp_idx + 1)
         parent_snapshot["current_price"] = round(float(exit_price), 10)
         parent_snapshot["pnl"] = 0.0
         parent_snapshot["management_checkpoint_at"] = datetime.now(timezone.utc).isoformat()
@@ -2751,7 +2966,7 @@ class TradingCore:
             "is_partial_close": True,
             "position_size": partial_size,
             "exit_price": round(float(exit_price), 10),
-            "exit_reason": f"IG Managed Partial TP {tp_idx + 1}/{total_tiers}",
+            "exit_reason": exit_reason or f"IG Managed Partial TP {tp_idx + 1}/{total_tiers}",
             "pnl": round(partial_pnl, 6),
             "exit_time": datetime.now(timezone.utc).isoformat(),
             "metadata": metadata,
@@ -2761,7 +2976,7 @@ class TradingCore:
         self._record_partial_reduction(parent_snapshot, partial_trade, partial_pnl)
         self._publish_positions_snapshot()
         logger.info(
-            f"[TradingCore] IG partial TP {tp_idx + 1}/{total_tiers} "
+            f"[TradingCore] {exit_reason or f'IG partial TP {tp_idx + 1}/{total_tiers}'} "
             f"{pos.get('asset')} size={partial_size:.6f} pnl={partial_pnl:.2f}"
         )
 
@@ -3491,6 +3706,7 @@ class TradingCore:
                 return
             if self._enforce_broker_daily_guard(prices):
                 return
+            self._enforce_agent_trading_rules(prices)
             self._manage_broker_position_exits(prices)
             self._paper_trader.update_positions(prices)
             try:
@@ -7609,6 +7825,118 @@ class TradingCore:
             reason=reason,
         )
         self._publish_positions_snapshot()
+
+    def partial_close_position_manually(
+        self,
+        trade_id: str,
+        *,
+        fraction: float = 0.5,
+        local_close_size: Optional[float] = None,
+        reason: str = "Manual Partial Close",
+    ) -> Optional[Dict[str, Any]]:
+        pos = self.state.get_open_position(trade_id)
+        if not pos:
+            return None
+        current_size = self._float_or_zero(pos.get("position_size"))
+        if current_size <= 0.0:
+            return None
+        if local_close_size is None:
+            close_size = current_size * max(0.0, min(1.0, float(fraction or 0.0)))
+        else:
+            close_size = self._float_or_zero(local_close_size)
+        close_size = min(current_size, max(0.0, close_size))
+        if close_size <= 0.0:
+            return None
+        if close_size >= current_size * 0.999:
+            closed = self.close_position_manually(trade_id, reason=reason)
+            return {"success": bool(closed), "closed": bool(closed), "position": closed, "full_close": True}
+
+        broker_name = str(pos.get("broker") or pos.get("execution_mode") or "").lower()
+        if broker_name.startswith("ig") or broker_name == "ig":
+            router = getattr(self, "exchange_router", None)
+            if router is None or not hasattr(router, "partial_close_position"):
+                logger.error(f"[TradingCore] Cannot partially close IG position {trade_id}: exchange router unavailable")
+                return None
+            broker_result = router.partial_close_position(pos, local_close_size=close_size, reason=reason)
+            if not broker_result or broker_result.status != "FILLED":
+                logger.error(
+                    f"[TradingCore] Broker partial close failed {trade_id}: "
+                    f"{getattr(broker_result, 'error', 'no result')}"
+                )
+                return None
+            self._record_broker_partial_take_profit(
+                pos=pos,
+                tp_idx=max(0, int(pos.get("tp_hit", 0) or 0)),
+                tp_level=self._normalize_position_price(pos, getattr(broker_result, "avg_price", 0.0) or pos.get("current_price") or pos.get("entry_price")),
+                total_tiers=max(1, len(self._broker_position_take_profit_levels(pos)) or 1),
+                partial_size=close_size,
+                broker_result=broker_result,
+                exit_reason=reason,
+                source="agent_command",
+                advance_tp=False,
+            )
+            refreshed = self.state.get_open_position(trade_id) or {}
+            return {
+                "success": True,
+                "trade_id": trade_id,
+                "asset": pos.get("asset"),
+                "closed_size": close_size,
+                "remaining_size": self._float_or_zero(refreshed.get("position_size")),
+                "broker_position_size": self._float_or_zero(refreshed.get("broker_position_size")),
+                "full_close": False,
+            }
+
+        entry = self._normalize_position_price(pos, pos.get("entry_price", 0))
+        direction = str(pos.get("direction", pos.get("signal", "BUY")) or "BUY").upper()
+        exit_price, _ = self._manual_close_exit_price(pos, entry, close_size, direction)
+        pnl = self._manual_close_pnl(pos, entry, exit_price, close_size, direction)
+        remaining_size = max(0.0, current_size - close_size)
+        metadata = dict(pos.get("metadata") or {})
+        event = {
+            "source": "agent_command",
+            "reason": reason,
+            "closed_at": datetime.now(timezone.utc).isoformat(),
+            "close_size": round(float(close_size), 8),
+            "remaining_size": round(float(remaining_size), 8),
+            "exit_price": round(float(exit_price), 10),
+        }
+        events = metadata.get("manual_partial_close_events") if isinstance(metadata.get("manual_partial_close_events"), list) else []
+        metadata["manual_partial_close_events"] = list(events)[-10:] + [event]
+        metadata["last_manual_partial_close"] = event
+
+        parent_snapshot = dict(pos)
+        parent_snapshot["position_size"] = round(float(remaining_size), 8)
+        parent_snapshot["current_price"] = round(float(exit_price), 10)
+        parent_snapshot["pnl"] = 0.0
+        parent_snapshot["management_checkpoint_at"] = event["closed_at"]
+        parent_snapshot["metadata"] = metadata
+
+        from execution.paper_trader import PaperTrader
+
+        partial_trade = PaperTrader._close(
+            dict(
+                pos,
+                trade_id=f"{trade_id}-PART{int(time.time() * 1000) % 1000000}",
+                parent_trade_id=trade_id,
+                is_partial_close=True,
+                position_size=close_size,
+                metadata=metadata,
+            ),
+            exit_price,
+            reason,
+            pnl,
+        )
+        self._sync_reduced_parent_position(trade_id, parent_snapshot)
+        self._record_partial_reduction(parent_snapshot, partial_trade, pnl)
+        self._publish_positions_snapshot()
+        return {
+            "success": True,
+            "trade_id": trade_id,
+            "asset": pos.get("asset"),
+            "closed_size": close_size,
+            "remaining_size": remaining_size,
+            "full_close": False,
+        }
 
     def close_position_manually(self, trade_id: str, *, reason: str = "Manual Close") -> Optional[Dict]:
         pos = self.state.get_open_position(trade_id)
