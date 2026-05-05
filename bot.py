@@ -683,30 +683,45 @@ def _start_pre_bot_services(engine, args) -> None:
 
     def _start_exchange_router():
         from config.config import (
+            CTRADER_EXECUTION_ENABLED,
             EXECUTION_MODE,
             IG_EXECUTION_ENABLED,
-            IG_EXECUTION_ROUTE_ASSETS,
-            IG_EXECUTION_ROUTE_CATEGORIES,
         )
         from execution.exchange_router import ExchangeRouter
         from execution.paper_adapter import PaperAdapter
+        from services.execution_broker_state import configured_execution_broker, load_execution_broker_state
         router = ExchangeRouter()
         if hasattr(engine, "_paper_trader") and engine._paper_trader:
             router.register("paper", PaperAdapter(engine._paper_trader))
         mode = str(EXECUTION_MODE or "paper").lower()
-        if IG_EXECUTION_ENABLED or mode in {"ig", "ig_demo", "ig_live"}:
+        try:
+            active_provider = str((load_execution_broker_state() or {}).get("provider") or "").strip().lower()
+        except Exception:
+            active_provider = ""
+        active_provider = active_provider or configured_execution_broker()
+        if IG_EXECUTION_ENABLED or mode in {"ig", "ig_demo", "ig_live"} or active_provider == "ig":
             from execution.ig_adapter import IGAdapter
 
             router.register("ig", IGAdapter())
-            route_categories = (
-                IG_EXECUTION_ROUTE_CATEGORIES
-                or (["forex", "crypto", "commodities", "indices"] if mode in {"ig", "ig_demo", "ig_live"} else [])
-            )
-            for category in route_categories:
-                router.set_route(category, "ig")
-            for asset in IG_EXECUTION_ROUTE_ASSETS:
-                router.set_asset_route(asset, "ig")
+        if CTRADER_EXECUTION_ENABLED or mode in {"ctrader", "ctrader_demo", "ctrader_live"} or active_provider == "ctrader":
+            try:
+                from execution.ctrader_adapter import CTraderAdapter
+
+                router.register("ctrader", CTraderAdapter())
+            except Exception as exc:
+                logger.error(f"[bot] cTrader execution adapter failed to register: {exc}")
         engine.exchange_router = router
+        try:
+            apply_routes = getattr(engine, "_apply_execution_broker_routes", None)
+            if callable(apply_routes):
+                route_result = apply_routes(active_provider)
+                if not route_result.get("success"):
+                    logger.warning(
+                        f"[bot] Active execution broker route not applied for {active_provider}: "
+                        f"{route_result.get('error') or route_result}"
+                    )
+        except Exception as exc:
+            logger.warning(f"[bot] Execution broker route setup skipped: {exc}")
         try:
             start_command_bridge = getattr(engine, "start_dashboard_command_listener", None)
             if callable(start_command_bridge):

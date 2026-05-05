@@ -1013,6 +1013,7 @@ _GLOBAL_API_CACHE_SKIP_PREFIXES = (
     "/api/monitoring/metrics",
     "/api/monitoring/errors",
     "/api/market/heatmap",
+    "/api/execution-broker",
 )
 
 
@@ -4664,6 +4665,69 @@ def _send_bot_command(action: str, payload: Dict[str, Any], *, timeout_seconds: 
                 client.close()
             except Exception:
                 pass
+
+
+@app.route("/api/execution-broker", methods=["GET"])
+@_check_api_auth
+def api_get_execution_broker():
+    """Return the currently selected execution broker profile."""
+    core = _core()
+    try:
+        if core and hasattr(core, "active_execution_broker_state"):
+            state = core.active_execution_broker_state()
+            routes = {}
+            router = getattr(core, "exchange_router", None)
+            if router is not None and hasattr(router, "route_snapshot"):
+                routes = router.route_snapshot()
+            return jsonify({"success": True, "broker": state, "routes": routes})
+        response = _send_bot_command("get_execution_broker", {}, timeout_seconds=10.0)
+        if response.get("success"):
+            return jsonify(response)
+        try:
+            from services.execution_broker_state import load_execution_broker_state
+
+            return jsonify(
+                {
+                    "success": True,
+                    "broker": load_execution_broker_state(),
+                    "routes": {},
+                    "bridge_warning": response.get("error") or "",
+                }
+            )
+        except Exception:
+            return jsonify(response), 503
+    except Exception as exc:
+        return jsonify({"success": False, "error": str(exc)}), 500
+
+
+@app.route("/api/execution-broker", methods=["POST"])
+@_check_api_auth
+@_check_rate_limit
+def api_set_execution_broker():
+    """Switch the active broker route profile without restarting the dashboard."""
+    try:
+        data = request.get_json(silent=True) or {}
+        provider = str(data.get("provider") or "").strip().lower()
+        broker_name = str(data.get("broker_name") or "").strip()
+        if not provider:
+            return jsonify({"success": False, "error": "provider required"}), 400
+        payload = {
+            "provider": provider,
+            "broker_name": broker_name,
+            "source": "dashboard",
+            "reason": str(data.get("reason") or "Dashboard execution broker switch")[:180],
+        }
+        core = _core()
+        if core and hasattr(core, "set_execution_broker"):
+            response = core.set_execution_broker(**payload)
+        else:
+            response = _send_bot_command("set_execution_broker", payload, timeout_seconds=15.0)
+        if response.get("success"):
+            _invalidate_cache_prefixes("page_overview:command_center:", "risk_portfolio")
+            return jsonify(response)
+        return jsonify(response), 400
+    except Exception as exc:
+        return jsonify({"success": False, "error": str(exc)}), 500
 
 
 def _dashboard_close_response_status(response: Dict[str, Any]) -> int:

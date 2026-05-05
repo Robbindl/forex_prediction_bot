@@ -227,6 +227,27 @@ class _SharedRuntimeTradingSystemProxy:
     def resume_trading(self, *, source: str = "deepseek_chat") -> Dict[str, Any]:
         return self._send_runtime_command("resume_trading", {"source": source})
 
+    def set_execution_broker(
+        self,
+        provider: str,
+        *,
+        broker_name: str = "",
+        reason: str = "Robbie chat execution broker switch",
+        source: str = "deepseek_chat",
+    ) -> Dict[str, Any]:
+        return self._send_runtime_command(
+            "set_execution_broker",
+            {
+                "provider": provider,
+                "broker_name": broker_name,
+                "reason": reason,
+                "source": source,
+            },
+        )
+
+    def active_execution_broker_state(self) -> Dict[str, Any]:
+        return self._send_runtime_command("get_execution_broker", {})
+
     def close_position_manually(self, trade_id: str, *, reason: str = "Robbie chat close") -> Dict[str, Any]:
         return self._send_runtime_command(
             "close_position",

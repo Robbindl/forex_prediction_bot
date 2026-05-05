@@ -70,6 +70,10 @@ IG_MAX_ROUTED_ASSETS = _parse_int(os.getenv("IG_MAX_ROUTED_ASSETS", "6"), 6)
 IG_STREAMING_HOLDOFF_SEC = _parse_int(os.getenv("IG_STREAMING_HOLDOFF_SEC", "300"), 300)
 EXECUTION_MODE = os.getenv("EXECUTION_MODE", "paper").strip().lower() or "paper"
 EXECUTION_ROLE = os.getenv("EXECUTION_ROLE", "trader").strip().lower() or "trader"
+BROKER_EXECUTION_PROVIDER = os.getenv("BROKER_EXECUTION_PROVIDER", "").strip().lower()
+BROKER_EXECUTION_STATE_PATH = Path(
+    os.getenv("BROKER_EXECUTION_STATE_PATH", "data/runtime_locks/execution_broker.json")
+)
 IG_EXECUTION_ENABLED = os.getenv("IG_EXECUTION_ENABLED", "false").lower() == "true"
 _IG_EXECUTION_DRY_RUN_DEFAULT = "false" if EXECUTION_MODE == "ig_demo" else "true"
 IG_EXECUTION_DRY_RUN = os.getenv("IG_EXECUTION_DRY_RUN", _IG_EXECUTION_DRY_RUN_DEFAULT).lower() == "true"
@@ -82,6 +86,43 @@ IG_EXECUTION_ROUTE_CATEGORIES = [
 IG_EXECUTION_ROUTE_ASSETS = [
     item.strip()
     for item in os.getenv("IG_EXECUTION_ROUTE_ASSETS", "").split(",")
+    if item.strip()
+]
+CTRADER_EXECUTION_ENABLED = _parse_bool(os.getenv("CTRADER_EXECUTION_ENABLED", "false"), False)
+_CTRADER_EXECUTION_DRY_RUN_DEFAULT = "false" if EXECUTION_MODE in {"ctrader", "ctrader_demo", "ctrader_live"} else "true"
+CTRADER_EXECUTION_DRY_RUN = _parse_bool(
+    os.getenv("CTRADER_EXECUTION_DRY_RUN", _CTRADER_EXECUTION_DRY_RUN_DEFAULT),
+    _CTRADER_EXECUTION_DRY_RUN_DEFAULT == "true",
+)
+CTRADER_EXECUTION_BROKER_NAME = os.getenv("CTRADER_EXECUTION_BROKER_NAME", "pepperstone").strip() or "pepperstone"
+CTRADER_EXECUTION_ENVIRONMENT = os.getenv("CTRADER_EXECUTION_ENVIRONMENT", "demo").strip().lower() or "demo"
+CTRADER_EXECUTION_CLIENT_ID = os.getenv("CTRADER_EXECUTION_CLIENT_ID", "").strip()
+CTRADER_EXECUTION_CLIENT_SECRET = os.getenv("CTRADER_EXECUTION_CLIENT_SECRET", "").strip()
+CTRADER_EXECUTION_ACCESS_TOKEN = os.getenv("CTRADER_EXECUTION_ACCESS_TOKEN", "").strip()
+CTRADER_EXECUTION_REFRESH_TOKEN = os.getenv("CTRADER_EXECUTION_REFRESH_TOKEN", "").strip()
+CTRADER_EXECUTION_ACCOUNT_ID = os.getenv("CTRADER_EXECUTION_ACCOUNT_ID", "").strip()
+CTRADER_EXECUTION_REDIRECT_URI = os.getenv("CTRADER_EXECUTION_REDIRECT_URI", "http://localhost").strip() or "http://localhost"
+CTRADER_EXECUTION_TOKEN_CACHE_PATH = Path(
+    os.getenv("CTRADER_EXECUTION_TOKEN_CACHE_PATH", "data/ctrader_execution_tokens.json")
+)
+CTRADER_EXECUTION_ROUTE_CATEGORIES = [
+    item.strip().lower()
+    for item in os.getenv("CTRADER_EXECUTION_ROUTE_CATEGORIES", "forex,commodities").split(",")
+    if item.strip()
+]
+CTRADER_EXECUTION_ROUTE_ASSETS = [
+    item.strip()
+    for item in os.getenv("CTRADER_EXECUTION_ROUTE_ASSETS", "").split(",")
+    if item.strip()
+]
+CTRADER_EXECUTION_DISABLED_ASSETS = [
+    item.strip().upper()
+    for item in os.getenv("CTRADER_EXECUTION_DISABLED_ASSETS", "").replace(";", ",").split(",")
+    if item.strip()
+]
+CTRADER_EXECUTION_ALLOWED_CATEGORIES = [
+    item.strip().lower()
+    for item in os.getenv("CTRADER_EXECUTION_ALLOWED_CATEGORIES", "forex,commodities").split(",")
     if item.strip()
 ]
 BROKER_STARTUP_TRADE_FREEZE_SECONDS = _parse_float(os.getenv("BROKER_STARTUP_TRADE_FREEZE_SECONDS", "300"), 300.0)
@@ -135,6 +176,18 @@ IG_TRAILING_STOP_MIN_UPDATE_SECONDS = _parse_float(
 )
 IG_TRAILING_STOP_MIN_IMPROVEMENT_R = _parse_float(
     os.getenv("IG_TRAILING_STOP_MIN_IMPROVEMENT_R", "0.10"),
+    0.10,
+)
+CTRADER_MANAGED_TRAILING_STOP_ENABLED = _parse_bool(
+    os.getenv("CTRADER_MANAGED_TRAILING_STOP_ENABLED", os.getenv("IG_MANAGED_TRAILING_STOP_ENABLED", "true")),
+    True,
+)
+CTRADER_TRAILING_STOP_MIN_UPDATE_SECONDS = _parse_float(
+    os.getenv("CTRADER_TRAILING_STOP_MIN_UPDATE_SECONDS", os.getenv("IG_TRAILING_STOP_MIN_UPDATE_SECONDS", "60")),
+    60.0,
+)
+CTRADER_TRAILING_STOP_MIN_IMPROVEMENT_R = _parse_float(
+    os.getenv("CTRADER_TRAILING_STOP_MIN_IMPROVEMENT_R", os.getenv("IG_TRAILING_STOP_MIN_IMPROVEMENT_R", "0.10")),
     0.10,
 )
 BINANCE_PUBLIC_DATA_ENABLED = os.getenv("BINANCE_PUBLIC_DATA_ENABLED", "true").lower() == "true"

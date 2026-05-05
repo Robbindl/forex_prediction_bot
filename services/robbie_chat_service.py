@@ -1533,6 +1533,28 @@ class RobbieChatService:
         q = str(q or "").lower()
         if not q:
             return False
+        if any(
+            token in q
+            for token in (
+                "execution broker",
+                "active broker",
+                "current broker",
+                "switch broker",
+                "change broker",
+                "set broker",
+                "broker to",
+                "execution to",
+                "route execution",
+                "paper execution",
+                "use pepperstone",
+                "use ic markets",
+                "use icmarkets",
+                "use ctrader",
+                "use c trader",
+                "use ig",
+            )
+        ):
+            return True
         if any(token in q for token in ("cancel rule", "cancel rules", "cancel command", "cancel commands", "pending command", "pending rule", "agent rule")) or re.search(r"\bcancel\b.*\b(?:rules?|commands?)\b", q):
             return True
         if (
@@ -1742,6 +1764,68 @@ class RobbieChatService:
         if seconds <= 0:
             return None
         return datetime.now(timezone.utc) + timedelta(seconds=seconds)
+
+    @staticmethod
+    def _runtime_control_requested_execution_broker(q: str) -> Tuple[str, str]:
+        q = str(q or "").lower().replace("-", " ")
+        if "paper" in q and ("broker" in q or "execution" in q or "route" in q):
+            return "paper", "paper"
+        if "pepperstone" in q:
+            return "ctrader", "pepperstone"
+        if "ic markets" in q or "icmarkets" in q or "ic market" in q:
+            return "ctrader", "icmarkets"
+        if "ctrader" in q or "c trader" in q:
+            return "ctrader", "pepperstone"
+        if re.search(r"\big\b", q) and ("broker" in q or "execution" in q or "use ig" in q):
+            return "ig", "ig"
+        return "", ""
+
+    @staticmethod
+    def _runtime_control_execution_broker_query(q: str) -> bool:
+        q = str(q or "").lower()
+        return bool(
+            any(token in q for token in ("active broker", "current broker", "execution broker", "which broker", "what broker"))
+            and not any(token in q for token in ("switch", "change", "set", "use ", "route"))
+        )
+
+    @classmethod
+    def _runtime_control_execution_broker_response(cls, question: str, runtime: Dict[str, Any]) -> str:
+        core = runtime.get("core")
+        q = str(question or "").lower()
+        provider, broker_name = cls._runtime_control_requested_execution_broker(q)
+        state_fn = getattr(core, "active_execution_broker_state", None)
+        set_fn = getattr(core, "set_execution_broker", None)
+
+        if not provider:
+            if cls._runtime_control_execution_broker_query(q) and callable(state_fn):
+                raw_state = state_fn()
+                state = raw_state.get("broker") if isinstance(raw_state, dict) and isinstance(raw_state.get("broker"), dict) else raw_state
+                state = state if isinstance(state, dict) else {}
+                active = str(state.get("provider") or "paper").upper()
+                name = str(state.get("broker_name") or state.get("provider") or "").strip()
+                suffix = f" ({name})" if name and name.lower() != active.lower() else ""
+                return f"Active execution broker: {active}{suffix}."
+            return "I can switch execution broker, but name the target: IG, Pepperstone cTrader, IC Markets cTrader, or paper."
+
+        if not callable(set_fn):
+            return "The runtime snapshot is available, but this process does not expose an execution-broker switch hook."
+
+        result = set_fn(
+            provider,
+            broker_name=broker_name,
+            source="robbie_chat",
+            reason=f"Robbie chat command: {str(question or '').strip()[:160]}",
+        )
+        if isinstance(result, dict) and not result.get("success", True):
+            return f"Execution broker switch failed: {result.get('error') or result}"
+        state = result.get("broker") if isinstance(result, dict) and isinstance(result.get("broker"), dict) else {}
+        active = str(state.get("provider") or provider).upper()
+        label = str(state.get("broker_name") or broker_name or provider).strip()
+        route = result.get("route") if isinstance(result, dict) and isinstance(result.get("route"), dict) else {}
+        routed = route.get("routing") if isinstance(route.get("routing"), dict) else {}
+        routed_categories = ", ".join(sorted(k for k, v in routed.items() if v == str(state.get("provider") or provider).lower()))
+        suffix = f" Routes: {routed_categories}." if routed_categories else ""
+        return f"Execution broker set to {active} ({label}).{suffix}"
 
     @staticmethod
     def _runtime_control_open_positions(runtime: Dict[str, Any]) -> List[Dict[str, Any]]:
@@ -2088,6 +2172,13 @@ class RobbieChatService:
 
         q = str(question or "").lower()
         if (
+            cls._runtime_control_requested_execution_broker(q)[0]
+            or cls._runtime_control_execution_broker_query(q)
+            or any(token in q for token in ("switch broker", "change broker", "set broker", "broker to", "execution to", "route execution"))
+        ):
+            return cls._runtime_control_execution_broker_response(question, runtime)
+
+        if (
             re.search(r"\b(?:when|if|once)\b.*\b(?:close|flatten|liquidate|reduce|trim)\b", q)
             or re.search(r"\b(?:close|flatten|liquidate|reduce|trim)\b.*\b(?:when|if|once)\b", q)
             or re.search(r"\b(?:close|flatten|liquidate|reduce|trim)\b.*\b(?:at|above|below|under|over|reaches|hits|touches)\s+\d", q)
@@ -2148,7 +2239,7 @@ class RobbieChatService:
         if re.search(r"\b(?:close|flatten|liquidate)\b", q):
             return cls._runtime_control_close_response(question, runtime)
 
-        return "I understood this as a control request, but it needs a specific safe bot command: pause, resume, close, reprice weak, or reduce weak."
+        return "I understood this as a control request, but it needs a specific safe bot command: pause, resume, switch broker, close, reprice weak, reduce weak, or an agent rule like 'when XAU reaches 4590 close half'."
 
     @staticmethod
     def _issues_response(runtime: Dict[str, Any]) -> str:

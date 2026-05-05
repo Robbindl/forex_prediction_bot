@@ -42,6 +42,10 @@ from config.config import (
     BROKER_PORTFOLIO_MIN_LOSING_POSITIONS,
     BROKER_STARTUP_TRADE_FREEZE_SECONDS,
     BROKER_SUPPORT_CHECK_POOL_LIMIT,
+    CTRADER_EXECUTION_ENABLED,
+    CTRADER_MANAGED_TRAILING_STOP_ENABLED,
+    CTRADER_TRAILING_STOP_MIN_IMPROVEMENT_R,
+    CTRADER_TRAILING_STOP_MIN_UPDATE_SECONDS,
     INACTIVITY_RELIEF_FULL_HOURS,
     INACTIVITY_RELIEF_START_HOURS,
     EXECUTION_MODE,
@@ -392,6 +396,107 @@ class TradingCore:
         self._clear_manual_pause_payload()
         logger.warning(f"[TradingCore] Trading manual pause cleared by {source or 'manual'}")
         return {"success": True, "paused": False, "was_paused": was_paused}
+
+    @staticmethod
+    def active_execution_broker_state() -> Dict[str, Any]:
+        try:
+            from services.execution_broker_state import load_execution_broker_state
+
+            return dict(load_execution_broker_state() or {})
+        except Exception:
+            mode = str(EXECUTION_MODE or "paper").lower()
+            provider = "ig" if IG_EXECUTION_ENABLED or mode in {"ig", "ig_demo", "ig_live"} else "paper"
+            if provider == "paper" and (CTRADER_EXECUTION_ENABLED or mode in {"ctrader", "ctrader_demo", "ctrader_live"}):
+                provider = "ctrader"
+            return {"provider": provider, "broker_name": provider, "source": "config_fallback"}
+
+    @staticmethod
+    def active_execution_broker() -> str:
+        return str(TradingCore.active_execution_broker_state().get("provider") or "paper").strip().lower() or "paper"
+
+    @staticmethod
+    def _csv_env(name: str, default: str = "") -> List[str]:
+        return [item.strip() for item in str(os.getenv(name, default) or "").replace(";", ",").split(",") if item.strip()]
+
+    def _execution_routes_for_provider(self, provider: str) -> Tuple[List[str], List[str]]:
+        provider = str(provider or "").strip().lower()
+        if provider == "ig":
+            categories = [item.lower() for item in self._csv_env("IG_EXECUTION_ROUTE_CATEGORIES")]
+            mode = str(EXECUTION_MODE or "paper").lower()
+            if not categories and mode in {"ig", "ig_demo", "ig_live"}:
+                categories = ["forex", "crypto", "commodities", "indices"]
+            return categories, self._csv_env("IG_EXECUTION_ROUTE_ASSETS")
+        if provider == "ctrader":
+            categories = [item.lower() for item in self._csv_env("CTRADER_EXECUTION_ROUTE_CATEGORIES", "forex,commodities")]
+            return categories, self._csv_env("CTRADER_EXECUTION_ROUTE_ASSETS")
+        return [], []
+
+    def _ensure_execution_adapter_registered(self, provider: str) -> None:
+        provider = str(provider or "").strip().lower()
+        router = getattr(self, "exchange_router", None)
+        if router is None or provider not in {"ig", "ctrader"}:
+            return
+        if getattr(router, "has_adapter", lambda _name: False)(provider):
+            return
+        if provider == "ig":
+            from execution.ig_adapter import IGAdapter
+
+            router.register("ig", IGAdapter())
+            return
+        if provider == "ctrader":
+            from execution.ctrader_adapter import CTraderAdapter
+
+            router.register("ctrader", CTraderAdapter())
+
+    def _apply_execution_broker_routes(self, provider: str) -> Dict[str, Any]:
+        provider = str(provider or "paper").strip().lower()
+        router = getattr(self, "exchange_router", None)
+        if router is None:
+            return {"success": False, "error": "exchange router unavailable"}
+        if hasattr(router, "reset_routes"):
+            router.reset_routes()
+        if provider == "paper":
+            snapshot = router.route_snapshot() if hasattr(router, "route_snapshot") else {}
+            return {"success": True, "provider": "paper", "routes": snapshot}
+        try:
+            self._ensure_execution_adapter_registered(provider)
+        except Exception as exc:
+            return {"success": False, "error": f"{provider} adapter registration failed: {exc}"}
+        if not getattr(router, "has_adapter", lambda _name: False)(provider):
+            return {"success": False, "error": f"{provider} adapter is not registered"}
+        categories, assets = self._execution_routes_for_provider(provider)
+        if not categories and not assets:
+            return {"success": False, "error": f"no execution routes configured for {provider}"}
+        for category in categories:
+            router.set_route(category, provider)
+        for asset in assets:
+            router.set_asset_route(asset, provider)
+        snapshot = router.route_snapshot() if hasattr(router, "route_snapshot") else {}
+        return {"success": True, "provider": provider, "categories": categories, "assets": assets, "routes": snapshot}
+
+    def set_execution_broker(
+        self,
+        provider: str,
+        *,
+        broker_name: str = "",
+        source: str = "manual",
+        reason: str = "",
+    ) -> Dict[str, Any]:
+        try:
+            from services.execution_broker_state import save_execution_broker_state
+
+            requested = save_execution_broker_state(provider, broker_name=broker_name, source=source, reason=reason)
+        except Exception as exc:
+            return {"success": False, "error": str(exc)}
+        route_result = self._apply_execution_broker_routes(str(requested.get("provider") or "paper"))
+        if not route_result.get("success"):
+            return {"success": False, "broker": requested, "error": route_result.get("error") or route_result}
+        logger.warning(
+            f"[TradingCore] Active execution broker set to {requested.get('provider')}"
+            + (f" ({requested.get('broker_name')})" if requested.get("broker_name") else "")
+            + (f" by {source}" if source else "")
+        )
+        return {"success": True, "broker": requested, "routes": route_result}
 
     def _manual_pause_block_reason(self) -> str:
         pause = self.trading_pause_state()
@@ -1937,7 +2042,7 @@ class TradingCore:
         broker_execution = metadata.get("broker_execution") if isinstance(metadata.get("broker_execution"), dict) else {}
         broker = str(pos.get("broker") or broker_execution.get("broker") or "").strip().lower()
         execution_mode = str(pos.get("execution_mode") or "").strip().lower()
-        return bool((broker and broker != "paper") or execution_mode.startswith("ig"))
+        return bool((broker and broker != "paper") or execution_mode.startswith(("ig", "ctrader")))
 
     @staticmethod
     def _normalize_position_price(pos: Dict[str, Any], value: Any) -> float:
@@ -1946,6 +2051,12 @@ class TradingCore:
         except Exception:
             return 0.0
         if numeric <= 0 or not TradingCore._is_broker_managed_position(pos):
+            return numeric
+        metadata = pos.get("metadata") if isinstance(pos.get("metadata"), dict) else {}
+        broker_execution = metadata.get("broker_execution") if isinstance(metadata.get("broker_execution"), dict) else {}
+        broker = str(pos.get("broker") or broker_execution.get("broker") or "").strip().lower()
+        execution_mode = str(pos.get("execution_mode") or "").strip().lower()
+        if broker != "ig" and not execution_mode.startswith("ig"):
             return numeric
         try:
             from services.ig_market_bridge import normalize_ig_market_price
@@ -2153,6 +2264,8 @@ class TradingCore:
     def _reconcile_broker_positions(self, *, force: bool = False) -> None:
         if not self._broker_balance_enabled():
             return
+        if self.active_execution_broker() != "ig":
+            return
         router = getattr(self, "exchange_router", None)
         if router is None or not hasattr(router, "list_open_positions"):
             return
@@ -2256,13 +2369,13 @@ class TradingCore:
             entry = self._normalize_position_price(pos, pos.get("entry_price", 0))
             metadata = dict(pos.get("metadata") or {})
             metadata["broker_mode_cleanup"] = {
-                "reason": "paper position is not broker-authoritative in IG execution mode",
+                "reason": "paper position is not broker-authoritative in broker execution mode",
                 "execution_mode": str(EXECUTION_MODE or ""),
             }
             closed = self.state.close_position(
                 trade_id,
                 entry,
-                "Broker mode cleanup: paper-only position not on IG",
+                "Broker mode cleanup: paper-only position not on active broker",
                 0.0,
                 extra_updates={"metadata": metadata},
             )
@@ -2270,7 +2383,7 @@ class TradingCore:
                 cleared += 1
         if cleared:
             logger.warning(
-                f"[TradingCore] Cleared {cleared} paper-only open position(s) because IG broker mode is active"
+                f"[TradingCore] Cleared {cleared} paper-only open position(s) because broker mode is active"
             )
 
     def _start_ohlcv_prewarm(self) -> None:
@@ -2768,11 +2881,22 @@ class TradingCore:
             all_rules=bool(payload.get("all") or payload.get("all_rules")),
         )
 
+    def _dashboard_set_execution_broker_command(self, payload: Dict[str, Any]) -> Dict[str, Any]:
+        provider = str(payload.get("provider") or payload.get("broker") or "").strip()
+        broker_name = str(payload.get("broker_name") or payload.get("name") or "").strip()
+        reason = str(payload.get("reason") or "dashboard execution broker switch").strip()
+        source = str(payload.get("source") or "dashboard").strip()
+        return self.set_execution_broker(provider, broker_name=broker_name, source=source, reason=reason)
+
     def _handle_dashboard_command(self, command: Dict[str, Any]) -> Dict[str, Any]:
         action = str(command.get("action") or "").strip().lower()
         payload = command.get("payload") if isinstance(command.get("payload"), dict) else {}
         if action == "ping":
             return {"success": True, "message": "TradingCore command bridge ready"}
+        if action == "get_execution_broker":
+            return {"success": True, "broker": self.active_execution_broker_state()}
+        if action == "set_execution_broker":
+            return self._dashboard_set_execution_broker_command(payload)
         if action == "close_position":
             return self._dashboard_close_position_command(payload)
         if action == "close_positions_bulk":
@@ -2906,10 +3030,11 @@ class TradingCore:
         partial_size: float,
         broker_result: Any,
         exit_reason: Optional[str] = None,
-        source: str = "ig_active_management",
+        source: str = "broker_active_management",
         advance_tp: bool = True,
     ) -> None:
         trade_id = str(pos.get("trade_id") or "")
+        broker_label = str(pos.get("broker") or self.active_execution_broker() or "broker").upper()
         entry = self._normalize_position_price(pos, pos.get("entry_price"))
         direction = str(pos.get("direction") or pos.get("signal") or "BUY").upper()
         exit_price = float(getattr(broker_result, "avg_price", 0.0) or 0.0) or tp_level
@@ -2961,12 +3086,12 @@ class TradingCore:
 
         partial_trade = {
             **dict(pos),
-            "trade_id": f"{trade_id}-IGTP{tp_idx + 1}-{int(time.time() * 1000) % 1000000}",
+            "trade_id": f"{trade_id}-BRTP{tp_idx + 1}-{int(time.time() * 1000) % 1000000}",
             "parent_trade_id": trade_id,
             "is_partial_close": True,
             "position_size": partial_size,
             "exit_price": round(float(exit_price), 10),
-            "exit_reason": exit_reason or f"IG Managed Partial TP {tp_idx + 1}/{total_tiers}",
+            "exit_reason": exit_reason or f"{broker_label} Managed Partial TP {tp_idx + 1}/{total_tiers}",
             "pnl": round(partial_pnl, 6),
             "exit_time": datetime.now(timezone.utc).isoformat(),
             "metadata": metadata,
@@ -2976,13 +3101,15 @@ class TradingCore:
         self._record_partial_reduction(parent_snapshot, partial_trade, partial_pnl)
         self._publish_positions_snapshot()
         logger.info(
-            f"[TradingCore] {exit_reason or f'IG partial TP {tp_idx + 1}/{total_tiers}'} "
+            f"[TradingCore] {exit_reason or f'{broker_label} partial TP {tp_idx + 1}/{total_tiers}'} "
             f"{pos.get('asset')} size={partial_size:.6f} pnl={partial_pnl:.2f}"
         )
 
-    @staticmethod
-    def _broker_portfolio_guard_enabled() -> bool:
-        return bool(BROKER_PORTFOLIO_EMERGENCY_FLATTEN_ENABLED)
+    def _broker_portfolio_guard_enabled(self) -> bool:
+        return self._broker_env_bool(
+            "BROKER_PORTFOLIO_EMERGENCY_FLATTEN_ENABLED",
+            bool(BROKER_PORTFOLIO_EMERGENCY_FLATTEN_ENABLED),
+        )
 
     def _broker_position_floating_pnl(
         self,
@@ -3031,7 +3158,7 @@ class TradingCore:
         balance = max(0.0, self._float_or_zero(getattr(self.state, "balance", 0.0) or self.balance))
         threshold_pct = max(
             0.1,
-            self._env_float(
+            self._broker_env_float(
                 "BROKER_PORTFOLIO_MAX_FLOATING_LOSS_PCT",
                 float(BROKER_PORTFOLIO_MAX_FLOATING_LOSS_PCT),
             ),
@@ -3049,7 +3176,7 @@ class TradingCore:
                 broker_positions
                 and len(losing) >= max(
                     1,
-                    self._env_int(
+                    self._broker_env_int(
                         "BROKER_PORTFOLIO_MIN_LOSING_POSITIONS",
                         int(BROKER_PORTFOLIO_MIN_LOSING_POSITIONS),
                     ),
@@ -3081,10 +3208,11 @@ class TradingCore:
         self._broker_portfolio_flatten_active = True
         cooldown_minutes = max(
             1.0,
-            self._env_float("BROKER_PORTFOLIO_COOLDOWN_MINUTES", float(BROKER_PORTFOLIO_COOLDOWN_MINUTES)),
+            self._broker_env_float("BROKER_PORTFOLIO_COOLDOWN_MINUTES", float(BROKER_PORTFOLIO_COOLDOWN_MINUTES)),
         )
+        provider_label = self.active_execution_broker().upper()
         reason = (
-            f"IG Portfolio Emergency Flatten: floating P/L "
+            f"{provider_label} Portfolio Emergency Flatten: floating P/L "
             f"{float(snapshot.get('total_pnl', 0.0) or 0.0):.2f} breached "
             f"-{float(snapshot.get('loss_limit', 0.0) or 0.0):.2f} "
             f"({float(snapshot.get('threshold_pct', 0.0) or 0.0):.2f}%) "
@@ -3142,9 +3270,8 @@ class TradingCore:
             return False
         return self._trigger_broker_portfolio_emergency_flatten(snapshot)
 
-    @staticmethod
-    def _broker_daily_guard_enabled() -> bool:
-        return bool(BROKER_DAILY_GUARD_ENABLED)
+    def _broker_daily_guard_enabled(self) -> bool:
+        return self._broker_env_bool("BROKER_DAILY_GUARD_ENABLED", bool(BROKER_DAILY_GUARD_ENABLED))
 
     @staticmethod
     def _broker_daily_guard_timezone():
@@ -3185,11 +3312,11 @@ class TradingCore:
         floating_pnl = round(sum(self._float_or_zero(pos.get("pnl")) for pos in broker_positions), 2)
         loss_pct = max(
             0.1,
-            self._env_float("BROKER_DAILY_MAX_LOSS_PCT", float(BROKER_DAILY_MAX_LOSS_PCT)),
+            self._broker_env_float("BROKER_DAILY_MAX_LOSS_PCT", float(BROKER_DAILY_MAX_LOSS_PCT)),
         )
         profit_pct = max(
             0.1,
-            self._env_float(
+            self._broker_env_float(
                 "BROKER_DAILY_PROFIT_TARGET_PCT",
                 float(BROKER_DAILY_PROFIT_TARGET_PCT),
             ),
@@ -3286,16 +3413,17 @@ class TradingCore:
 
     def _broker_daily_guard_reason(self, snapshot: Dict[str, Any]) -> str:
         status = str(snapshot.get("status") or "")
+        provider_label = self.active_execution_broker().upper()
         if status == "loss_limit":
             return (
-                "IG Daily Loss Guard: daily P/L "
+                f"{provider_label} Daily Loss Guard: daily P/L "
                 f"{float(snapshot.get('daily_pnl', 0.0) or 0.0):.2f} breached "
                 f"-{float(snapshot.get('loss_limit', 0.0) or 0.0):.2f} "
                 f"({float(snapshot.get('loss_pct', 0.0) or 0.0):.2f}%) "
                 f"until {snapshot.get('reset_at_eat')}"
             )
         return (
-            "IG Daily Profit Target: daily P/L "
+            f"{provider_label} Daily Profit Target: daily P/L "
             f"{float(snapshot.get('daily_pnl', 0.0) or 0.0):.2f} reached "
             f"{float(snapshot.get('profit_target', 0.0) or 0.0):.2f} "
             f"({float(snapshot.get('profit_pct', 0.0) or 0.0):.2f}%) "
@@ -3309,7 +3437,7 @@ class TradingCore:
         status = str(snapshot.get("status") or "")
         if not status:
             return False
-        flatten_profit = self._env_bool(
+        flatten_profit = self._broker_env_bool(
             "BROKER_DAILY_GUARD_FLATTEN_ON_PROFIT_TARGET",
             bool(BROKER_DAILY_GUARD_FLATTEN_ON_PROFIT_TARGET),
         )
@@ -3377,9 +3505,17 @@ class TradingCore:
             return False
         return self._trigger_broker_daily_guard_flatten(snapshot)
 
-    @staticmethod
-    def _broker_trailing_stop_enabled() -> bool:
-        return bool(IG_MANAGED_TRAILING_STOP_ENABLED)
+    @classmethod
+    def _broker_trailing_stop_enabled(cls) -> bool:
+        default = (
+            bool(CTRADER_MANAGED_TRAILING_STOP_ENABLED)
+            if cls.active_execution_broker() == "ctrader"
+            else bool(IG_MANAGED_TRAILING_STOP_ENABLED)
+        )
+        for name in cls._broker_env_names("BROKER_MANAGED_TRAILING_STOP_ENABLED"):
+            if str(os.getenv(name, "")).strip():
+                return cls._env_bool(name, default)
+        return default
 
     @staticmethod
     def _broker_stop_is_better(direction: str, new_stop: float, old_stop: float) -> bool:
@@ -3454,7 +3590,15 @@ class TradingCore:
             trail_atr_multiple=trail_atr_multiple,
         )
         new_stop = self._float_or_zero(candidate.get("stop_loss"))
-        min_improvement = max(0.0, float(IG_TRAILING_STOP_MIN_IMPROVEMENT_R or 0.0)) * initial_risk
+        default_improvement = (
+            float(CTRADER_TRAILING_STOP_MIN_IMPROVEMENT_R or 0.0)
+            if self.active_execution_broker() == "ctrader"
+            else float(IG_TRAILING_STOP_MIN_IMPROVEMENT_R or 0.0)
+        )
+        min_improvement = max(
+            0.0,
+            self._broker_env_float("BROKER_TRAILING_STOP_MIN_IMPROVEMENT_R", default_improvement),
+        ) * initial_risk
         if min_improvement > 0.0 and abs(new_stop - stop_loss) < min_improvement:
             return 0.0
         return new_stop if self._broker_stop_is_better(direction, new_stop, stop_loss) else 0.0
@@ -3483,7 +3627,15 @@ class TradingCore:
             return pos
 
         now = time.monotonic()
-        min_seconds = max(5.0, float(IG_TRAILING_STOP_MIN_UPDATE_SECONDS or 60.0))
+        default_min_seconds = (
+            float(CTRADER_TRAILING_STOP_MIN_UPDATE_SECONDS or 60.0)
+            if self.active_execution_broker() == "ctrader"
+            else float(IG_TRAILING_STOP_MIN_UPDATE_SECONDS or 60.0)
+        )
+        min_seconds = max(
+            5.0,
+            self._broker_env_float("BROKER_TRAILING_STOP_MIN_UPDATE_SECONDS", default_min_seconds),
+        )
         failure_count = int(self._broker_stop_amend_failures.get(trade_id) or 0)
         throttle_seconds = min_seconds if failure_count <= 0 else max(10.0, min(20.0, min_seconds / 3.0))
         last_attempt = float(self._broker_stop_amend_attempts.get(trade_id) or 0.0)
@@ -3491,16 +3643,17 @@ class TradingCore:
             return pos
         self._broker_stop_amend_attempts[trade_id] = now
 
+        broker_label = str(pos.get("broker") or self.active_execution_broker() or "broker").upper()
         result = router.update_position_stop(
             pos,
             stop_level=candidate_stop,
-            reason="IG Managed Trailing Stop",
+            reason=f"{broker_label} Managed Trailing Stop",
         )
         if result and result.status == "FILLED":
             self._broker_stop_amend_failures.pop(trade_id, None)
             metadata = dict(pos.get("metadata") or {})
             event = {
-                "source": "ig_active_management",
+                "source": f"{broker_label.lower()}_active_management",
                 "updated_at": datetime.now(timezone.utc).isoformat(),
                 "old_stop": round(self._float_or_zero(pos.get("stop_loss")), 10),
                 "new_stop": round(float(candidate_stop), 10),
@@ -3518,20 +3671,20 @@ class TradingCore:
             self.state.sync_open_position(updated)
             self._publish_positions_snapshot()
             logger.info(
-                f"[TradingCore] IG trailing stop amended {updated.get('asset')} "
+                f"[TradingCore] {broker_label} trailing stop amended {updated.get('asset')} "
                 f"{event['old_stop']} -> {event['new_stop']}"
             )
             return updated
 
         reason = getattr(result, "error", "no result") if result is not None else "no result"
         self._broker_stop_amend_failures[trade_id] = min(10, failure_count + 1)
-        logger.warning(f"[TradingCore] IG trailing stop amend failed {pos.get('asset')}: {reason}")
+        logger.warning(f"[TradingCore] {broker_label} trailing stop amend failed {pos.get('asset')}: {reason}")
         self._notify_broker_issue(
             str(pos.get("asset") or "?"),
             str(pos.get("category") or "unknown"),
             str(reason),
             stage="broker trailing stop amend",
-            action="stop was not amended on IG; bot-managed exit remains active and will retry later",
+            action="stop was not amended on the broker; bot-managed exit remains active and will retry later",
         )
         return pos
 
@@ -3550,6 +3703,7 @@ class TradingCore:
             current_price = self._broker_position_live_price(pos, prices)
             if not trade_id or current_price <= 0:
                 continue
+            broker_label = str(pos.get("broker") or self.active_execution_broker() or "broker").upper()
 
             entry_price = self._normalize_position_price(pos, pos.get("entry_price"))
             pos = self._apply_live_position_extremes(pos, entry=entry_price, current_price=current_price)
@@ -3557,8 +3711,8 @@ class TradingCore:
                 self.state.sync_open_position(pos)
             stop_loss = self._float_or_zero(pos.get("stop_loss"))
             if stop_loss > 0 and self._direction_level_hit(direction, current_price, stop_loss, kind="stop"):
-                logger.warning(f"[TradingCore] IG managed stop hit {asset} @ {current_price:.6f}")
-                self.close_position_manually(trade_id, reason="IG Managed Stop Loss")
+                logger.warning(f"[TradingCore] {broker_label} managed stop hit {asset} @ {current_price:.6f}")
+                self.close_position_manually(trade_id, reason=f"{broker_label} Managed Stop Loss")
                 continue
 
             pos = self._maybe_adjust_broker_trailing_stop(
@@ -3579,8 +3733,8 @@ class TradingCore:
                 continue
 
             if tp_idx >= len(tp_levels) - 1:
-                logger.info(f"[TradingCore] IG managed final TP hit {asset} @ {current_price:.6f}")
-                self.close_position_manually(trade_id, reason=f"IG Managed Take Profit {tp_idx + 1}/{len(tp_levels)}")
+                logger.info(f"[TradingCore] {broker_label} managed final TP hit {asset} @ {current_price:.6f}")
+                self.close_position_manually(trade_id, reason=f"{broker_label} Managed Take Profit {tp_idx + 1}/{len(tp_levels)}")
                 continue
 
             metadata = dict(pos.get("metadata") or {})
@@ -3594,13 +3748,13 @@ class TradingCore:
             target_fraction = float(fractions[tp_idx]) if tp_idx < len(fractions) else 1.0 / max(1, len(tp_levels))
             partial_size = min(current_size, max(0.0, initial_size * target_fraction))
             if partial_size <= 0 or partial_size >= current_size:
-                self.close_position_manually(trade_id, reason=f"IG Managed Take Profit {tp_idx + 1}/{len(tp_levels)}")
+                self.close_position_manually(trade_id, reason=f"{broker_label} Managed Take Profit {tp_idx + 1}/{len(tp_levels)}")
                 continue
 
             result = router.partial_close_position(
                 pos,
                 local_close_size=partial_size,
-                reason=f"IG Managed Partial TP {tp_idx + 1}/{len(tp_levels)}",
+                reason=f"{broker_label} Managed Partial TP {tp_idx + 1}/{len(tp_levels)}",
             )
             if result and result.status == "FILLED":
                 self._record_broker_partial_take_profit(
@@ -3613,7 +3767,7 @@ class TradingCore:
                 )
                 continue
             reason = getattr(result, "error", "no result") if result is not None else "no result"
-            logger.warning(f"[TradingCore] IG partial TP failed {asset}: {reason}")
+            logger.warning(f"[TradingCore] {broker_label} partial TP failed {asset}: {reason}")
             self._notify_broker_issue(
                 asset,
                 category,
@@ -3838,12 +3992,44 @@ class TradingCore:
             return bool(default)
         return text in {"1", "true", "yes", "on"}
 
+    @classmethod
+    def _broker_env_names(cls, generic_name: str) -> List[str]:
+        suffix = str(generic_name or "").strip()
+        if suffix.startswith("BROKER_"):
+            suffix = suffix[len("BROKER_"):]
+        provider = cls.active_execution_broker()
+        names: List[str] = []
+        if provider == "ig" and str(generic_name) == "BROKER_MIN_FINAL_TP_RR":
+            names.append("IG_MIN_ATTACHED_ORDER_RR")
+        if provider in {"ig", "ctrader"} and suffix:
+            names.append(f"{provider.upper()}_{suffix}")
+        names.append(str(generic_name))
+        return names
+
+    def _broker_env_float(self, generic_name: str, default: float) -> float:
+        for name in self._broker_env_names(generic_name):
+            if str(os.getenv(name, "")).strip():
+                return self._env_float(name, default)
+        return float(default)
+
+    def _broker_env_int(self, generic_name: str, default: int) -> int:
+        for name in self._broker_env_names(generic_name):
+            if str(os.getenv(name, "")).strip():
+                return self._env_int(name, default)
+        return int(default)
+
+    def _broker_env_bool(self, generic_name: str, default: bool) -> bool:
+        for name in self._broker_env_names(generic_name):
+            if str(os.getenv(name, "")).strip():
+                return self._env_bool(name, default)
+        return bool(default)
+
     def _broker_startup_execution_block_reason(self) -> str:
         if not self._broker_balance_enabled():
             return ""
         freeze_seconds = max(
             0.0,
-            self._env_float("BROKER_STARTUP_TRADE_FREEZE_SECONDS", float(BROKER_STARTUP_TRADE_FREEZE_SECONDS)),
+            self._broker_env_float("BROKER_STARTUP_TRADE_FREEZE_SECONDS", float(BROKER_STARTUP_TRADE_FREEZE_SECONDS)),
         )
         if freeze_seconds <= 0:
             return ""
@@ -3858,7 +4044,7 @@ class TradingCore:
             return ""
         spacing = max(
             0.0,
-            self._env_float("BROKER_MIN_SECONDS_BETWEEN_ENTRIES", float(BROKER_MIN_SECONDS_BETWEEN_ENTRIES)),
+            self._broker_env_float("BROKER_MIN_SECONDS_BETWEEN_ENTRIES", float(BROKER_MIN_SECONDS_BETWEEN_ENTRIES)),
         )
         if spacing <= 0 or self._last_execution_monotonic <= 0:
             return ""
@@ -3902,14 +4088,18 @@ class TradingCore:
         alignment = float(metadata.get("alignment_score", metadata.get("playbook_alignment_score", 0.0)) or 0.0)
         conflicts = int(metadata.get("playbook_conflict_components", 0) or 0)
 
-        min_confidence = self._env_float("BROKER_MIN_EXECUTION_CONFIDENCE", float(BROKER_MIN_EXECUTION_CONFIDENCE))
+        min_confidence = self._broker_env_float("BROKER_MIN_EXECUTION_CONFIDENCE", float(BROKER_MIN_EXECUTION_CONFIDENCE))
         min_opportunity = self._env_float(
             "BROKER_MIN_EXECUTION_OPPORTUNITY_SCORE",
             float(BROKER_MIN_EXECUTION_OPPORTUNITY_SCORE),
         )
-        min_setup = self._env_float("BROKER_MIN_EXECUTION_SETUP_QUALITY", float(BROKER_MIN_EXECUTION_SETUP_QUALITY))
-        min_alignment = self._env_float("BROKER_MIN_EXECUTION_ALIGNMENT", float(BROKER_MIN_EXECUTION_ALIGNMENT))
-        max_conflicts = self._env_int("BROKER_MAX_EXECUTION_CONFLICTS", int(BROKER_MAX_EXECUTION_CONFLICTS))
+        min_opportunity = self._broker_env_float(
+            "BROKER_MIN_EXECUTION_OPPORTUNITY_SCORE",
+            min_opportunity,
+        )
+        min_setup = self._broker_env_float("BROKER_MIN_EXECUTION_SETUP_QUALITY", float(BROKER_MIN_EXECUTION_SETUP_QUALITY))
+        min_alignment = self._broker_env_float("BROKER_MIN_EXECUTION_ALIGNMENT", float(BROKER_MIN_EXECUTION_ALIGNMENT))
+        max_conflicts = self._broker_env_int("BROKER_MAX_EXECUTION_CONFLICTS", int(BROKER_MAX_EXECUTION_CONFLICTS))
 
         if confidence < min_confidence:
             return f"confidence {confidence:.3f} below broker floor {min_confidence:.3f}"
@@ -3938,7 +4128,7 @@ class TradingCore:
     def _broker_cycle_execution_limit(self, requested_limit: int) -> int:
         if not self._broker_balance_enabled():
             return max(1, int(requested_limit or 1))
-        configured = self._env_int("BROKER_MAX_NEW_TRADES_PER_CYCLE", int(BROKER_MAX_NEW_TRADES_PER_CYCLE))
+        configured = self._broker_env_int("BROKER_MAX_NEW_TRADES_PER_CYCLE", int(BROKER_MAX_NEW_TRADES_PER_CYCLE))
         return max(1, min(max(1, int(requested_limit or 1)), configured))
 
     def _execute_ranked_survivors(self, survivors: List[Signal], limit: int = 3) -> int:
@@ -3977,7 +4167,7 @@ class TradingCore:
         if self._broker_balance_enabled():
             support_pool_limit = max(
                 1,
-                self._env_int("BROKER_SUPPORT_CHECK_POOL_LIMIT", int(BROKER_SUPPORT_CHECK_POOL_LIMIT)),
+                self._broker_env_int("BROKER_SUPPORT_CHECK_POOL_LIMIT", int(BROKER_SUPPORT_CHECK_POOL_LIMIT)),
             )
             quality_pool = quality_pool[:support_pool_limit]
         executable_pool = self._filter_broker_supported_survivors(quality_pool)
@@ -4125,7 +4315,13 @@ class TradingCore:
     @staticmethod
     def _broker_balance_enabled() -> bool:
         mode = str(EXECUTION_MODE or "paper").lower()
-        return bool(IG_EXECUTION_ENABLED or mode in {"ig", "ig_demo", "ig_live"})
+        provider = TradingCore.active_execution_broker()
+        return bool(
+            provider in {"ig", "ctrader"}
+            or IG_EXECUTION_ENABLED
+            or CTRADER_EXECUTION_ENABLED
+            or mode in {"ig", "ig_demo", "ig_live", "ctrader", "ctrader_demo", "ctrader_live"}
+        )
 
     def _sync_broker_account_balance(self, *, force: bool = False) -> None:
         if not self._broker_balance_enabled():
@@ -4135,9 +4331,24 @@ class TradingCore:
             return
         self._last_broker_balance_sync = now
         try:
-            from services.market_data_router import get_broker_account_balance_summary
+            provider = self.active_execution_broker()
+            summary: Dict[str, Any] = {}
+            if provider == "ctrader":
+                router = getattr(self, "exchange_router", None)
+                balance = float(router.get_balance(category="forex", asset="EUR/USD") if router is not None else 0.0)
+                summary = {
+                    "authenticated": balance > 0,
+                    "balance": balance,
+                    "currency": "USD",
+                    "environment": "ctrader",
+                    "account_id": "",
+                    "broker": "ctrader",
+                }
+            else:
+                from services.market_data_router import get_broker_account_balance_summary
 
-            summary = dict(get_broker_account_balance_summary() or {})
+                summary = dict(get_broker_account_balance_summary() or {})
+                summary.setdefault("broker", "ig")
             self._last_broker_balance_snapshot = summary
             if not summary.get("authenticated"):
                 return
@@ -4161,9 +4372,10 @@ class TradingCore:
             current = float(self.state.balance or 0.0)
             if abs(current - broker_balance) < 0.01:
                 return
+            broker_label = str(summary.get("broker") or provider or "broker").strip().lower()
             sync_fn = getattr(self.state, "sync_balance", None)
             if callable(sync_fn):
-                sync_fn(broker_balance, "ig_account")
+                sync_fn(broker_balance, f"{broker_label}_account")
             else:
                 self.state.adjust_balance(broker_balance - current)
             if self._risk_manager is not None:
@@ -4174,7 +4386,7 @@ class TradingCore:
                 except Exception:
                     pass
             logger.info(
-                f"[TradingCore] Synced IG {summary.get('environment', 'demo')} balance "
+                f"[TradingCore] Synced {broker_label.upper()} {summary.get('environment', 'demo')} balance "
                 f"{summary.get('currency') or ''} {broker_balance:,.2f}"
             )
         except Exception as exc:
@@ -4414,12 +4626,12 @@ class TradingCore:
         open_positions = list(self.state.get_open_positions() or [])
         open_position_count = len(open_positions)
         if self._broker_balance_enabled():
-            broker_max_open = self._env_int("BROKER_MAX_OPEN_POSITIONS", int(BROKER_MAX_OPEN_POSITIONS))
-            broker_max_per_category = self._env_int(
+            broker_max_open = self._broker_env_int("BROKER_MAX_OPEN_POSITIONS", int(BROKER_MAX_OPEN_POSITIONS))
+            broker_max_per_category = self._broker_env_int(
                 "BROKER_MAX_OPEN_POSITIONS_PER_CATEGORY",
                 int(BROKER_MAX_OPEN_POSITIONS_PER_CATEGORY),
             )
-            broker_max_same_direction = self._env_int(
+            broker_max_same_direction = self._broker_env_int(
                 "BROKER_MAX_SAME_DIRECTION_POSITIONS",
                 int(BROKER_MAX_SAME_DIRECTION_POSITIONS),
             )
@@ -4525,7 +4737,7 @@ class TradingCore:
             policy_rr = float(get_execution_policy(signal.asset).get("min_rr", 1.45) or 1.45)
         except Exception:
             policy_rr = 1.45
-        configured = self._env_float("BROKER_MIN_FINAL_TP_RR", policy_rr)
+        configured = self._broker_env_float("BROKER_MIN_FINAL_TP_RR", policy_rr)
         return max(1.0, float(configured or policy_rr))
 
     def _execution_exit_plan_block_reason(self, signal: Signal) -> str:
@@ -4635,7 +4847,7 @@ class TradingCore:
             final_target = targets[-1]
             final_rr = abs(final_target - entry) / max(risk_distance, 1e-9)
             policy_rr = float(get_execution_policy(asset).get("min_rr", 1.45) or 1.45)
-            min_rr = max(1.0, self._env_float("BROKER_MIN_FINAL_TP_RR", policy_rr))
+            min_rr = max(1.0, self._broker_env_float("BROKER_MIN_FINAL_TP_RR", policy_rr))
             metadata = signal_dict.get("metadata") if isinstance(signal_dict.get("metadata"), dict) else {}
             risk_multiplier = float(metadata.get("effective_risk_multiplier", 1.0) or 1.0)
             estimated_loss = PositionSizer.estimated_stop_loss_usd(asset, category, entry, stop_loss, position_size)
@@ -7983,10 +8195,11 @@ class TradingCore:
             return {"success": bool(closed), "closed": bool(closed), "position": closed, "full_close": True}
 
         broker_name = str(pos.get("broker") or pos.get("execution_mode") or "").lower()
-        if broker_name.startswith("ig") or broker_name == "ig":
+        broker_managed = bool(broker_name and broker_name != "paper")
+        if broker_managed:
             router = getattr(self, "exchange_router", None)
             if router is None or not hasattr(router, "partial_close_position"):
-                logger.error(f"[TradingCore] Cannot partially close IG position {trade_id}: exchange router unavailable")
+                logger.error(f"[TradingCore] Cannot partially close broker position {trade_id}: exchange router unavailable")
                 return None
             broker_result = router.partial_close_position(pos, local_close_size=close_size, reason=reason)
             if not broker_result or broker_result.status != "FILLED":
@@ -8079,10 +8292,10 @@ class TradingCore:
         exit_price, pnl = self._manual_close_exit_price(pos, entry, size, direction)
         broker_name = str(pos.get("broker") or pos.get("execution_mode") or "").lower()
         broker_result = None
-        if broker_name.startswith("ig") or broker_name == "ig":
+        if broker_name and broker_name != "paper":
             router = getattr(self, "exchange_router", None)
             if router is None or not hasattr(router, "close_position"):
-                logger.error(f"[TradingCore] Cannot close IG position {trade_id}: exchange router unavailable")
+                logger.error(f"[TradingCore] Cannot close broker position {trade_id}: exchange router unavailable")
                 return None
             broker_result = router.close_position(pos, reason=reason)
             if not broker_result or broker_result.status != "FILLED":
@@ -8098,7 +8311,7 @@ class TradingCore:
         close_updates = self._manual_close_exit_updates(pos, entry, exit_price)
         if broker_result is not None:
             broker_close_meta = {
-                "broker": str(pos.get("broker") or "ig"),
+                "broker": str(pos.get("broker") or broker_name or self.active_execution_broker()),
                 "status": str(getattr(broker_result, "status", "") or ""),
                 "order_id": str(getattr(broker_result, "order_id", "") or ""),
                 "avg_price": float(getattr(broker_result, "avg_price", 0.0) or 0.0),

@@ -46,6 +46,18 @@ class ExchangeRouter:
         self._asset_routing[str(asset or "").upper()] = adapter_name
         logger.info(f"[Router] Route asset {asset} → {adapter_name}")
 
+    def reset_routes(self) -> None:
+        self._routing = dict(_DEFAULT_ROUTING)
+        self._asset_routing = {}
+        logger.info("[Router] Execution routes reset to paper defaults")
+
+    def route_snapshot(self) -> dict:
+        return {
+            "routing": dict(self._routing),
+            "asset_routing": dict(self._asset_routing),
+            "adapters": sorted(self._adapters.keys()),
+        }
+
     def submit(self, signal: dict) -> Optional[OrderResult]:
         """
         Convert a signal dict to an OrderRequest and route it.
