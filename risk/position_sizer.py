@@ -370,19 +370,24 @@ class PositionSizer:
         lots = _round_down_to_step(target_lots, lot_step)
         effective_lots = lots
         if lots < min_lot:
+            proportional_lots = max(float(target_lots or 0.0), 0.0)
+            proportional_risk = risk_per_lot * proportional_lots if risk_per_lot > 0 else 0.0
+            proportional_size_safe = proportional_lots > 0.0 and (
+                risk_per_lot <= 0.0 or proportional_risk <= (risk_budget_usd + max(1e-9, risk_budget_usd * 0.03))
+            )
             min_lot_safe = False
             if risk_per_lot > 0:
                 min_lot_safe = (risk_per_lot * min_lot) <= (risk_budget_usd + 1e-9)
             elif risk_budget_usd > 0:
                 min_lot_safe = True
-            if min_lot_safe:
+            if min_lot_safe or proportional_size_safe:
                 # Keep proportional exposure for floor-limited instruments.
                 # This prevents XAG/USD, WTI, XRP-USD and similar assets from
                 # inflating to a distorted 0.01-lot equivalent when the
                 # intended gold-normalized size is smaller than the broker
                 # floor. The paper model keeps the effective exposure aligned
                 # with the requested target lots instead of over-sizing it.
-                effective_lots = max(target_lots, 0.0)
+                effective_lots = proportional_lots
                 lots = min_lot
             else:
                 logger.debug(
