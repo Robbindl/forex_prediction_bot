@@ -284,6 +284,32 @@ class PositionSizer:
         }
 
     @classmethod
+    def risk_budget_usd(
+        cls,
+        account_balance: float,
+        category: str,
+        *,
+        risk_multiplier: float = 1.0,
+    ) -> float:
+        risk_scale = max(0.50, min(1.50, float(risk_multiplier or 1.0)))
+        return round(max(0.0, float(account_balance or 0.0)) * _risk_budget_fraction(category) * risk_scale, 6)
+
+    @classmethod
+    def estimated_stop_loss_usd(
+        cls,
+        asset: str,
+        category: str,
+        entry_price: float,
+        stop_loss: float,
+        size: float,
+    ) -> float:
+        entry = float(entry_price or 0.0)
+        stop = float(stop_loss or 0.0)
+        if entry <= 0.0 or stop <= 0.0 or float(size or 0.0) <= 0.0:
+            return 0.0
+        return round(abs(entry - stop) * cls.cash_per_price_unit(asset, category, size), 6)
+
+    @classmethod
     def reference_lots(cls, asset: str, category: str, entry_price: float) -> float:
         return round(float(_reference_lots_for_entry(asset, category, entry_price) or 0.0), 6)
 
@@ -327,7 +353,11 @@ class PositionSizer:
         scaled_base_lots  = base_lots * balance_factor * risk_scale
         target_lots       = _confidence_lots(scaled_base_lots, confidence)
 
-        risk_budget_usd = max(0.0, self.account_balance * _risk_budget_fraction(category) * risk_scale)
+        risk_budget_usd = self.risk_budget_usd(
+            self.account_balance,
+            category,
+            risk_multiplier=risk_scale,
+        )
         sl_pips = 0.0
         risk_per_lot = 0.0
         if entry_price and stop_loss:

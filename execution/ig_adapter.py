@@ -216,6 +216,21 @@ class IGAdapter(ExchangeAdapter):
                 error=f"IG attached order rejected locally: {fatal_attached_error}",
                 raw={"request": payload, "broker_sizing": converted.to_dict(), "attached_orders": attached_orders},
             )
+        attached_risk_error = self._attached_order_risk_error(
+            req=req,
+            asset=asset,
+            category=category,
+            spec=spec,
+            converted=converted,
+            attached_orders=attached_orders or {},
+        )
+        if attached_risk_error:
+            return OrderResult(
+                order_id="",
+                status="FAILED",
+                error=f"IG attached order rejected locally: {attached_risk_error}",
+                raw={"request": payload, "broker_sizing": converted.to_dict(), "attached_orders": attached_orders},
+            )
 
         if self._dry_run:
             return OrderResult(
@@ -582,6 +597,69 @@ class IGAdapter(ExchangeAdapter):
         if details:
             return f"IG rejected order: dealStatus={deal_status or 'UNKNOWN'} {details}"
         return f"IG rejected order: dealStatus={deal_status or 'UNKNOWN'}"
+
+    def _attached_order_risk_error(
+        self,
+        *,
+        req: OrderRequest,
+        asset: str,
+        category: str,
+        spec: BrokerContractSpec,
+        converted,
+        attached_orders: Dict[str, Any],
+    ) -> str:
+        side = str(req.side or "").upper()
+        reference = _safe_float(attached_orders.get("reference_price"), _safe_float(req.price, 0.0))
+        stop = _safe_float((attached_orders.get("stop") or {}).get("estimated_level"), 0.0)
+        limit = _safe_float((attached_orders.get("limit") or {}).get("estimated_level"), 0.0)
+        if side not in {"BUY", "SELL"} or reference <= 0.0 or stop <= 0.0 or limit <= 0.0:
+            return "attached stop/limit risk check missing reference, stop, or limit"
+        stop_valid = (side == "BUY" and stop < reference) or (side == "SELL" and stop > reference)
+        limit_valid = (side == "BUY" and limit > reference) or (side == "SELL" and limit < reference)
+        if not stop_valid or not limit_valid:
+            return "attached stop/limit is on the wrong side after broker adjustment"
+        risk_distance = abs(reference - stop)
+        reward_distance = abs(limit - reference)
+        if risk_distance <= 0.0 or reward_distance <= 0.0:
+            return "attached stop/limit distance is zero"
+        min_rr = max(
+            1.0,
+            _env_float(
+                "IG_MIN_ATTACHED_ORDER_RR",
+                _env_float("BROKER_MIN_FINAL_TP_RR", 1.0),
+            ),
+        )
+        final_rr = reward_distance / max(risk_distance, 1e-9)
+        risk_multiplier = 1.0
+        account_balance = 0.0
+        metadata = req.metadata if isinstance(req.metadata, dict) else {}
+        try:
+            risk_multiplier = float(metadata.get("effective_risk_multiplier", 1.0) or 1.0)
+        except Exception:
+            risk_multiplier = 1.0
+        execution_sizing = metadata.get("execution_sizing") if isinstance(metadata.get("execution_sizing"), dict) else {}
+        try:
+            account_balance = float(execution_sizing.get("account_balance", 0.0) or 0.0)
+        except Exception:
+            account_balance = 0.0
+        broker_risk = risk_distance * float(converted.broker_size or 0.0) * float(spec.cash_per_price_unit_per_size or 0.0)
+        risk_budget = PositionSizer.risk_budget_usd(
+            account_balance,
+            category,
+            risk_multiplier=risk_multiplier,
+        ) if account_balance > 0.0 else 0.0
+        attached_orders["risk_check"] = {
+            "final_rr": round(final_rr, 4),
+            "min_final_rr": round(min_rr, 4),
+            "broker_stop_loss_usd": round(broker_risk, 2),
+            "risk_budget_usd": round(risk_budget, 2),
+        }
+        if final_rr < min_rr:
+            return f"attached final RR below floor {final_rr:.2f} < {min_rr:.2f}"
+        tolerance = max(1.0, risk_budget * 0.03)
+        if risk_budget > 0.0 and broker_risk > risk_budget + tolerance:
+            return f"attached stop risk ${broker_risk:.2f} exceeds budget ${risk_budget:.2f}"
+        return ""
 
     def _build_trade(
         self,

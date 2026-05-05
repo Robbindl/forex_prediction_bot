@@ -3789,10 +3789,10 @@ class TradingCore:
         accepted_pairs: List[Tuple[Signal, Dict[str, Any]]] = []
         for sig, ctx in signal_ctx_pairs:
             result = self.decision_engine.evaluate(sig, ctx)
-            if result is not None:
+            if result is not None and bool(getattr(result, "alive", False)):
                 accepted_pairs.append((result, ctx))
             else:
-                self._log_decision_rejection(sig, ctx)
+                self._log_decision_rejection(result or sig, ctx)
         return accepted_pairs
 
     def _publish_ranked_survivors(
@@ -4474,6 +4474,16 @@ class TradingCore:
         return True
 
     def _passes_execution_risk_gate(self, signal: Signal) -> bool:
+        if not bool(getattr(signal, "alive", True)):
+            reason = str(getattr(signal, "kill_reason", "") or "decision engine rejected signal")
+            logger.warning(f"[TradingCore] Risk gate blocked {signal.asset}: {reason}")
+            return False
+
+        exit_plan_reason = self._execution_exit_plan_block_reason(signal)
+        if exit_plan_reason:
+            logger.warning(f"[TradingCore] Risk gate blocked {signal.asset}: {exit_plan_reason}")
+            return False
+
         # FIX S6: Call validate_signal so the daily loss guard is actually
         # enforced.  Previously this was never called → 5% daily loss halt
         # had no effect → bot could blow the account in a single bad day.
@@ -4488,6 +4498,71 @@ class TradingCore:
                 return False
         return True
 
+    @staticmethod
+    def _directional_targets(entry: float, direction: str, *target_groups: Any) -> List[float]:
+        side = str(direction or "").upper()
+        targets: List[float] = []
+        for group in target_groups:
+            values = group if isinstance(group, (list, tuple)) else [group]
+            for raw in list(values or []):
+                try:
+                    value = float(raw)
+                except Exception:
+                    continue
+                if value <= 0.0:
+                    continue
+                if side == "BUY" and value > entry:
+                    targets.append(value)
+                elif side == "SELL" and value < entry:
+                    targets.append(value)
+        reverse = side == "SELL"
+        return sorted(dict.fromkeys(targets), reverse=reverse)
+
+    def _minimum_final_rr(self, signal: Signal) -> float:
+        try:
+            from core.asset_profiles import get_execution_policy
+
+            policy_rr = float(get_execution_policy(signal.asset).get("min_rr", 1.45) or 1.45)
+        except Exception:
+            policy_rr = 1.45
+        configured = self._env_float("BROKER_MIN_FINAL_TP_RR", policy_rr)
+        return max(1.0, float(configured or policy_rr))
+
+    def _execution_exit_plan_block_reason(self, signal: Signal) -> str:
+        direction = str(signal.direction or "").upper()
+        if direction not in {"BUY", "SELL"}:
+            return "invalid trade direction"
+        try:
+            entry = float(signal.entry_price or 0.0)
+            stop_loss = float(signal.stop_loss or 0.0)
+        except Exception:
+            return "invalid entry or stop"
+        if entry <= 0.0 or stop_loss <= 0.0:
+            return "missing entry or stop"
+        if direction == "BUY" and stop_loss >= entry:
+            return f"stop is not below entry for BUY ({stop_loss:.6f} >= {entry:.6f})"
+        if direction == "SELL" and stop_loss <= entry:
+            return f"stop is not above entry for SELL ({stop_loss:.6f} <= {entry:.6f})"
+        risk_distance = abs(entry - stop_loss)
+        if risk_distance <= 0.0:
+            return "zero stop distance"
+        targets = self._directional_targets(
+            entry,
+            direction,
+            getattr(signal, "take_profit", 0.0),
+        )
+        if not targets:
+            return "missing valid broker take-profit target"
+        final_target = targets[-1]
+        final_rr = abs(final_target - entry) / max(risk_distance, 1e-9)
+        min_rr = self._minimum_final_rr(signal)
+        signal.metadata["final_exit_rr"] = round(final_rr, 4)
+        signal.metadata["final_exit_target"] = round(float(final_target), 6)
+        signal.metadata["minimum_final_rr"] = round(min_rr, 4)
+        if final_rr < min_rr:
+            return f"final target RR below floor {final_rr:.2f} < {min_rr:.2f}"
+        return ""
+
     def _build_executable_signal_payload(self, signal: Signal) -> Dict[str, Any]:
         signal_dict = signal.to_dict()
         if self._risk_manager and float(signal_dict.get("position_size", 0) or 0) <= 0:
@@ -4499,6 +4574,7 @@ class TradingCore:
                 or risk_parameters.get("adaptive_risk_multiplier")
                 or 1.0
             )
+            metadata["effective_risk_multiplier"] = adaptive_risk_multiplier
             try:
                 signal_dict["position_size"] = self._risk_manager.calculate_position_size(
                     entry_price=float(signal_dict.get("entry_price", 0) or 0),
@@ -4533,6 +4609,56 @@ class TradingCore:
         except Exception as _broker_size_err:
             logger.debug(f"[TradingCore] Broker-neutral sizing metadata error for {signal.asset}: {_broker_size_err}")
         return signal_dict
+
+    def _executable_payload_risk_block_reason(self, signal_dict: Dict[str, Any]) -> str:
+        try:
+            from core.asset_profiles import get_execution_policy
+            from risk.position_sizer import PositionSizer
+
+            asset = str(signal_dict.get("asset") or "")
+            category = str(signal_dict.get("category") or "")
+            direction = str(signal_dict.get("direction") or signal_dict.get("signal") or "").upper()
+            entry = float(signal_dict.get("entry_price", 0.0) or 0.0)
+            stop_loss = float(signal_dict.get("stop_loss", 0.0) or 0.0)
+            take_profit = float(signal_dict.get("take_profit", 0.0) or 0.0)
+            position_size = float(signal_dict.get("position_size", 0.0) or 0.0)
+            if direction not in {"BUY", "SELL"} or entry <= 0.0 or stop_loss <= 0.0:
+                return "invalid executable entry/stop"
+            if direction == "BUY" and stop_loss >= entry:
+                return "executable BUY stop is not below entry"
+            if direction == "SELL" and stop_loss <= entry:
+                return "executable SELL stop is not above entry"
+            risk_distance = abs(entry - stop_loss)
+            targets = self._directional_targets(entry, direction, take_profit)
+            if not targets:
+                return "executable payload has no valid broker target"
+            final_target = targets[-1]
+            final_rr = abs(final_target - entry) / max(risk_distance, 1e-9)
+            policy_rr = float(get_execution_policy(asset).get("min_rr", 1.45) or 1.45)
+            min_rr = max(1.0, self._env_float("BROKER_MIN_FINAL_TP_RR", policy_rr))
+            metadata = signal_dict.get("metadata") if isinstance(signal_dict.get("metadata"), dict) else {}
+            risk_multiplier = float(metadata.get("effective_risk_multiplier", 1.0) or 1.0)
+            estimated_loss = PositionSizer.estimated_stop_loss_usd(asset, category, entry, stop_loss, position_size)
+            risk_budget = PositionSizer.risk_budget_usd(
+                float(getattr(self.state, "balance", 0.0) or 0.0),
+                category,
+                risk_multiplier=risk_multiplier,
+            )
+            metadata["execution_risk_check"] = {
+                "final_rr": round(final_rr, 4),
+                "min_final_rr": round(min_rr, 4),
+                "estimated_stop_loss_usd": round(estimated_loss, 2),
+                "risk_budget_usd": round(risk_budget, 2),
+            }
+            signal_dict["metadata"] = metadata
+            if final_rr < min_rr:
+                return f"executable final target RR below floor {final_rr:.2f} < {min_rr:.2f}"
+            tolerance = max(1.0, risk_budget * 0.03)
+            if risk_budget > 0.0 and estimated_loss > risk_budget + tolerance:
+                return f"executable stop risk ${estimated_loss:.2f} exceeds budget ${risk_budget:.2f}"
+        except Exception as exc:
+            logger.debug(f"[TradingCore] Executable risk check unavailable: {exc}")
+        return ""
 
     def _apply_universal_order_flow_gate(
         self,
@@ -4659,6 +4785,11 @@ class TradingCore:
         signal_dict = self._build_executable_signal_payload(signal)
         signal_dict = self._apply_universal_order_flow_gate(signal, signal_dict) or {}
         if not signal_dict:
+            return False
+
+        payload_risk_reason = self._executable_payload_risk_block_reason(signal_dict)
+        if payload_risk_reason:
+            logger.warning(f"[TradingCore] Risk gate blocked {signal.asset}: {payload_risk_reason}")
             return False
 
         if not self._passes_portfolio_risk_gate(signal, signal_dict):
