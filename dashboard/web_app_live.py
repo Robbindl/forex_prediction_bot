@@ -9184,6 +9184,75 @@ def _collect_runtime_service_details() -> Dict[str, Any]:
         services["ig_routed_data"] = {"ok": False, "state": "error", "meta": "bridge unavailable"}
 
     try:
+        from services.execution_broker_state import load_execution_broker_state
+
+        def _env_enabled(name: str, default: bool = False) -> bool:
+            value = str(os.getenv(name, "")).strip().lower()
+            if value in {"1", "true", "yes", "on"}:
+                return True
+            if value in {"0", "false", "no", "off"}:
+                return False
+            return default
+
+        broker_state = load_execution_broker_state()
+        selected = str(broker_state.get("provider") or "").lower() == "ctrader"
+        broker_name = str(broker_state.get("broker_name") or "").strip().lower()
+        enabled = _env_enabled(
+            "PEPPERSTONE_CTRADER_EXECUTION_ENABLED",
+            _env_enabled("CTRADER_EXECUTION_ENABLED", False),
+        )
+        dry_run = _env_enabled(
+            "PEPPERSTONE_CTRADER_EXECUTION_DRY_RUN",
+            _env_enabled("CTRADER_EXECUTION_DRY_RUN", True),
+        )
+        environment = (
+            os.getenv("PEPPERSTONE_CTRADER_EXECUTION_ENVIRONMENT")
+            or os.getenv("CTRADER_EXECUTION_ENVIRONMENT")
+            or "demo"
+        ).strip().lower()
+        account_ready = bool(
+            os.getenv("PEPPERSTONE_CTRADER_EXECUTION_ACCOUNT_ID")
+            or os.getenv("CTRADER_EXECUTION_ACCOUNT_ID")
+        )
+        client_ready = bool(
+            os.getenv("PEPPERSTONE_CTRADER_EXECUTION_CLIENT_ID")
+            or os.getenv("CTRADER_EXECUTION_CLIENT_ID")
+        )
+        token_ready = bool(
+            os.getenv("PEPPERSTONE_CTRADER_EXECUTION_ACCESS_TOKEN")
+            or os.getenv("PEPPERSTONE_CTRADER_EXECUTION_REFRESH_TOKEN")
+            or os.getenv("CTRADER_EXECUTION_ACCESS_TOKEN")
+            or os.getenv("CTRADER_EXECUTION_REFRESH_TOKEN")
+        )
+        if not enabled:
+            state = "disabled"
+        elif dry_run:
+            state = "dry-run"
+        elif not (account_ready and client_ready and token_ready):
+            state = "needs credentials"
+        else:
+            state = "ready"
+        meta_parts = [environment.upper()]
+        meta_parts.append("selected" if selected and broker_name == "pepperstone" else "not selected")
+        if not account_ready:
+            meta_parts.append("missing account")
+        if not client_ready:
+            meta_parts.append("missing client")
+        if not token_ready:
+            meta_parts.append("missing tokens")
+        services["pepperstone_ctrader_execution"] = {
+            "ok": bool(enabled and not dry_run and account_ready and client_ready and token_ready),
+            "state": state,
+            "meta": " | ".join(part for part in meta_parts if part),
+        }
+    except Exception:
+        services["pepperstone_ctrader_execution"] = {
+            "ok": False,
+            "state": "error",
+            "meta": "status unavailable",
+        }
+
+    try:
         from services.ctrader_live_depth_bridge import ctrader_live_depth_bridge
 
         status = ctrader_live_depth_bridge.status() if CTRADER_LIVE_DEPTH_ENABLED else {}

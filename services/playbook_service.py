@@ -288,6 +288,8 @@ _ASSET_PLANS: Dict[str, _AssetPlaybookPlan] = {
     "SOL-USD": _AssetPlaybookPlan(_DEFAULT_PLAYBOOKS, preferred_interval="15m"),
     "BNB-USD": _AssetPlaybookPlan(_DEFAULT_PLAYBOOKS, preferred_interval="15m"),
     "XRP-USD": _AssetPlaybookPlan(_DEFAULT_PLAYBOOKS, preferred_interval="15m"),
+    "XAU/USD": _AssetPlaybookPlan(_DEFAULT_PLAYBOOKS, ("asia", "europe", "us"), "15m"),
+    "XAG/USD": _AssetPlaybookPlan(_DEFAULT_PLAYBOOKS, ("asia", "europe", "us"), "15m"),
     "WTI": _AssetPlaybookPlan(_DEFAULT_PLAYBOOKS, ("us_overlap", "us_open", "us_core"), "15m"),
     "USOIL": _AssetPlaybookPlan(_DEFAULT_PLAYBOOKS, ("us_overlap", "us_open", "us_core"), "15m"),
     "US500": _AssetPlaybookPlan(_DEFAULT_PLAYBOOKS, ("us_overlap", "us_open", "us_core"), "15m", True),
