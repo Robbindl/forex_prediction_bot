@@ -44,3 +44,16 @@ def test_pepperstone_live_gold_parity_converts_non_usd_quote_to_usd():
     assert pip_usd == 0.064
     assert profile["quote_asset"] == "JPY"
     assert profile["quote_to_usd"] == 0.0064
+
+
+def test_pepperstone_gold_parity_gate_allows_demo_and_live(monkeypatch):
+    monkeypatch.setenv("CTRADER_EXECUTION_BROKER_NAME", "pepperstone")
+    monkeypatch.setenv("PEPPERSTONE_CTRADER_GOLD_PIP_PARITY_SIZING", "true")
+
+    demo_bridge = CTraderOneShot("place_order", {})
+    demo_bridge.environment = "demo"
+    live_bridge = CTraderOneShot("place_order", {})
+    live_bridge.environment = "live"
+
+    assert demo_bridge._pepperstone_gold_parity_enabled() is True
+    assert live_bridge._pepperstone_gold_parity_enabled() is True

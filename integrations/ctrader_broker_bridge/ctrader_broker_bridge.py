@@ -352,11 +352,14 @@ class CTraderOneShot:
                 return self.symbol_lookup[key]
         raise RuntimeError(f"cTrader symbol not found for {asset or symbol}")
 
-    def _pepperstone_live_gold_parity_enabled(self) -> bool:
-        if self.environment != "live":
+    def _pepperstone_gold_parity_enabled(self) -> bool:
+        if self.environment not in {"demo", "live"}:
             return False
         if _broker_key(os.getenv("CTRADER_EXECUTION_BROKER_NAME", "")) != "pepperstone":
             return False
+        value = os.getenv("PEPPERSTONE_CTRADER_GOLD_PIP_PARITY_SIZING", "").strip()
+        if value:
+            return _bool_env("PEPPERSTONE_CTRADER_GOLD_PIP_PARITY_SIZING", True)
         return _bool_env("PEPPERSTONE_CTRADER_LIVE_GOLD_PIP_PARITY_SIZING", True)
 
     def _symbol_asset_codes(self, symbol_id: int) -> Tuple[str, str]:
@@ -474,7 +477,7 @@ class CTraderOneShot:
             try:
                 self._prepare_pepperstone_conversion_rates()
             except Exception as exc:
-                self._finish(False, f"Pepperstone live lot sizing failed: {exc}")
+                self._finish(False, f"Pepperstone cTrader lot sizing failed: {exc}")
             return
         if label.startswith("conversion:"):
             quote = label.split(":", 1)[1]
@@ -504,7 +507,7 @@ class CTraderOneShot:
             try:
                 self._submit_pepperstone_gold_parity_order()
             except Exception as exc:
-                self._finish(False, f"Pepperstone live lot sizing failed: {exc}")
+                self._finish(False, f"Pepperstone cTrader lot sizing failed: {exc}")
             return
         for quote, meta in list(self._pending_conversions.items()):
             self._request_symbol_detail(f"conversion:{quote}", int(meta["symbol_id"]))
@@ -545,13 +548,13 @@ class CTraderOneShot:
             try:
                 self._submit_pepperstone_gold_parity_order()
             except Exception as exc:
-                self._finish(False, f"Pepperstone live lot sizing failed: {exc}")
+                self._finish(False, f"Pepperstone cTrader lot sizing failed: {exc}")
 
     def _submit_pepperstone_gold_parity_order(self) -> None:
         target_symbol = self._pending_specs.get("target")
         gold_symbol = self._pending_specs.get("gold")
         if target_symbol is None or gold_symbol is None:
-            self._finish(False, "Pepperstone live lot sizing specs incomplete")
+            self._finish(False, "Pepperstone cTrader lot sizing specs incomplete")
             return
         asset = str(self._pending_order.get("asset") or "")
         target_symbol_id = int(self._pending_order.get("symbol_id") or 0)
@@ -559,7 +562,7 @@ class CTraderOneShot:
         gold_pip_usd, gold_profile = self._pip_value_usd_at_001_lots(gold_symbol, gold_symbol_id)
         target_pip_usd, target_profile = self._pip_value_usd_at_001_lots(target_symbol, target_symbol_id)
         if gold_pip_usd <= 0.0 or target_pip_usd <= 0.0:
-            self._finish(False, "Pepperstone live pip value calculation failed")
+            self._finish(False, "Pepperstone cTrader pip value calculation failed")
             return
         if _normalize_name(asset) in {"XAUUSD", "GOLD"}:
             desired_lots = 0.01
@@ -570,14 +573,15 @@ class CTraderOneShot:
             if desired_lots <= 0.01:
                 desired_lots = 0.01
                 reason = "volatility cap 0.01"
-        max_lots_cap = max(0.01, _safe_float(os.getenv("PEPPERSTONE_CTRADER_LIVE_MAX_LOTS", "1.00"), 1.0))
+        max_lots_setting = os.getenv("PEPPERSTONE_CTRADER_MAX_LOTS", "").strip() or os.getenv("PEPPERSTONE_CTRADER_LIVE_MAX_LOTS", "1.00")
+        max_lots_cap = max(0.01, _safe_float(max_lots_setting, 1.0))
         desired_lots = min(max_lots_cap, max(0.01, float(desired_lots or 0.01)))
         volume, broker_lots = self._snap_volume(target_symbol, desired_lots, max_lots_cap=max_lots_cap)
         sizing = {
-            "sizing_model": "pepperstone_live_gold_0_01_pip_parity",
+            "sizing_model": "pepperstone_ctrader_gold_0_01_pip_parity",
             "broker": "ctrader",
             "broker_name": "pepperstone",
-            "environment": "live",
+            "environment": self.environment,
             "broker_size": broker_lots,
             "broker_volume": volume,
             "local_position_size": round(volume / 100.0, 8),
@@ -626,11 +630,11 @@ class CTraderOneShot:
         assert self.client is not None and self.account_id is not None
         asset = self.payload.get("asset") or self.payload.get("symbol") or ""
         symbol_id, symbol_name = self._resolve_symbol(asset, self.payload.get("symbol"))
-        if self._pepperstone_live_gold_parity_enabled():
+        if self._pepperstone_gold_parity_enabled():
             try:
                 gold_symbol_id, gold_symbol_name = self._resolve_symbol("XAU/USD", "XAUUSD")
             except Exception as exc:
-                self._finish(False, f"Pepperstone live lot sizing requires XAU/USD benchmark spec: {exc}")
+                self._finish(False, f"Pepperstone cTrader lot sizing requires XAU/USD benchmark spec: {exc}")
                 return
             self._pending_order = {
                 "asset": asset,
