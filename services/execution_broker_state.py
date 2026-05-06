@@ -26,9 +26,6 @@ _ALIASES = {
     "ctrader_live": "ctrader",
     "pepperstone": "ctrader",
     "pepperstone_ctrader": "ctrader",
-    "icmarkets": "ctrader",
-    "ic_markets": "ctrader",
-    "ic markets": "ctrader",
 }
 
 
@@ -83,6 +80,8 @@ def load_execution_broker_state() -> Dict[str, Any]:
     state["provider"] = provider
     if not str(state.get("broker_name") or "").strip():
         state["broker_name"] = CTRADER_EXECUTION_BROKER_NAME if provider == "ctrader" else provider
+    if provider == "ctrader":
+        state["broker_name"] = "pepperstone"
     return state
 
 
@@ -98,7 +97,7 @@ def save_execution_broker_state(
         raise ValueError(f"unsupported execution broker: {provider or 'unknown'}")
     payload = {
         "provider": normalized,
-        "broker_name": str(broker_name or (CTRADER_EXECUTION_BROKER_NAME if normalized == "ctrader" else normalized)).strip(),
+        "broker_name": "pepperstone" if normalized == "ctrader" else str(broker_name or normalized).strip(),
         "source": str(source or "manual"),
         "reason": str(reason or "").strip(),
         "updated_at_utc": datetime.now(timezone.utc).isoformat(),

@@ -248,7 +248,6 @@ html,body{height:100%;background:var(--bg);color:var(--tx);font-family:var(--fon
           <select id="executionBrokerSelect" onchange="switchExecutionBroker(this.value)">
             <option value="ig">IG</option>
             <option value="ctrader:pepperstone">Pepperstone cTrader</option>
-            <option value="ctrader:icmarkets">IC Markets cTrader</option>
             <option value="paper">Paper</option>
           </select>
           <span id="executionBrokerStatus">—</span>
@@ -1870,14 +1869,13 @@ async function fetchProtectedJson(url, options = {}){
 function brokerSelectValue(state){
   const provider=String(state?.provider||'paper').toLowerCase();
   const name=String(state?.broker_name||'').toLowerCase();
-  if(provider==='ctrader')return name.includes('ic')?'ctrader:icmarkets':'ctrader:pepperstone';
+  if(provider==='ctrader')return 'ctrader:pepperstone';
   if(provider==='ig')return 'ig';
   return 'paper';
 }
 function brokerLabel(state){
   const provider=String(state?.provider||'paper').toUpperCase();
-  const name=String(state?.broker_name||state?.provider||'').trim();
-  if(provider==='CTRADER')return `${name&&name.toLowerCase().includes('ic')?'IC Markets':'Pepperstone'} cTrader`;
+  if(provider==='CTRADER')return 'Pepperstone cTrader';
   if(provider==='IG')return 'IG';
   return 'Paper';
 }
@@ -1898,7 +1896,7 @@ async function switchExecutionBroker(value){
   const parts=raw.split(':');
   const provider=parts[0]||'paper';
   const brokerName=parts[1]||provider;
-  const label=provider==='ctrader'?(brokerName==='icmarkets'?'IC Markets cTrader':'Pepperstone cTrader'):provider.toUpperCase();
+  const label=provider==='ctrader'?'Pepperstone cTrader':provider.toUpperCase();
   if(status)status.textContent='switching…';
   setActionStatus(`Switching execution to ${label}…`,'info');
   try{

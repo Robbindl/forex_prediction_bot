@@ -1547,8 +1547,6 @@ class RobbieChatService:
                 "route execution",
                 "paper execution",
                 "use pepperstone",
-                "use ic markets",
-                "use icmarkets",
                 "use ctrader",
                 "use c trader",
                 "use ig",
@@ -1772,8 +1770,6 @@ class RobbieChatService:
             return "paper", "paper"
         if "pepperstone" in q:
             return "ctrader", "pepperstone"
-        if "ic markets" in q or "icmarkets" in q or "ic market" in q:
-            return "ctrader", "icmarkets"
         if "ctrader" in q or "c trader" in q:
             return "ctrader", "pepperstone"
         if re.search(r"\big\b", q) and ("broker" in q or "execution" in q or "use ig" in q):
@@ -1805,7 +1801,7 @@ class RobbieChatService:
                 name = str(state.get("broker_name") or state.get("provider") or "").strip()
                 suffix = f" ({name})" if name and name.lower() != active.lower() else ""
                 return f"Active execution broker: {active}{suffix}."
-            return "I can switch execution broker, but name the target: IG, Pepperstone cTrader, IC Markets cTrader, or paper."
+            return "I can switch execution broker, but name the target: IG, Pepperstone cTrader, or paper. IC Markets cTrader is kept for depth/data, not execution."
 
         if not callable(set_fn):
             return "The runtime snapshot is available, but this process does not expose an execution-broker switch hook."

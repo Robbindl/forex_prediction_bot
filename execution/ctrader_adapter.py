@@ -114,17 +114,15 @@ class CTraderAdapter(ExchangeAdapter):
             state = load_execution_broker_state()
             if str(state.get("provider") or "").strip().lower() == "ctrader":
                 name = str(state.get("broker_name") or "").strip()
-                if name:
+                if name.lower().replace(" ", "").replace("_", "") == "pepperstone":
                     return name
         except Exception:
             pass
-        return str(CTRADER_EXECUTION_BROKER_NAME or "pepperstone").strip() or "pepperstone"
+        return "pepperstone"
 
     @staticmethod
     def _profile_prefix(broker_name: str) -> str:
         key = str(broker_name or "").strip().lower().replace(" ", "").replace("_", "")
-        if key in {"icmarkets", "icmarket"}:
-            return "ICMARKETS_CTRADER_EXECUTION"
         if key == "pepperstone":
             return "PEPPERSTONE_CTRADER_EXECUTION"
         return "CTRADER_EXECUTION"

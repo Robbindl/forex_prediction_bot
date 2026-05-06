@@ -432,8 +432,6 @@ class TradingCore:
             profile_prefix = ""
             if broker_key == "pepperstone":
                 profile_prefix = "PEPPERSTONE_CTRADER_EXECUTION"
-            elif broker_key in {"icmarkets", "icmarket"}:
-                profile_prefix = "ICMARKETS_CTRADER_EXECUTION"
             categories: List[str] = []
             assets: List[str] = []
             if profile_prefix:
