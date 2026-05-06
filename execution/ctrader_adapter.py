@@ -290,21 +290,24 @@ class CTraderAdapter(ExchangeAdapter):
 
         order_id = str(result.get("position_id") or result.get("order_id") or result.get("deal_id") or payload["client_order_id"])
         avg_price = float(result.get("avg_price") or payload.get("entry_price") or 0.0)
-        filled_size = self._local_size_from_volume(result.get("volume"), payload.get("local_size"))
+        broker_sizing = dict(result.get("broker_sizing") or {})
+        filled_size = float(broker_sizing.get("local_position_size") or self._local_size_from_volume(result.get("volume"), payload.get("local_size")))
+        if not broker_sizing:
+            broker_sizing = {
+                "broker": "ctrader",
+                "broker_name": self._broker_name(),
+                "environment": self._environment(),
+                "broker_size": round(float(payload["lot_size"]), 6),
+                "broker_volume": int(payload["volume"]),
+                "local_position_size": round(float(payload["local_size"]), 8),
+                "broker_cash_per_price_unit_per_size": 1.0,
+            }
         raw = dict(result)
         raw.update(
             {
                 "broker": "ctrader",
                 "request": payload,
-                "broker_sizing": {
-                    "broker": "ctrader",
-                    "broker_name": self._broker_name(),
-                    "environment": self._environment(),
-                    "broker_size": round(float(payload["lot_size"]), 6),
-                    "broker_volume": int(payload["volume"]),
-                    "local_position_size": round(float(payload["local_size"]), 8),
-                    "broker_cash_per_price_unit_per_size": 1.0,
-                },
+                "broker_sizing": broker_sizing,
             }
         )
         raw["trade"] = self._build_trade_snapshot(req, payload, result, order_id=order_id, avg_price=avg_price, filled_size=filled_size)
@@ -336,15 +339,19 @@ class CTraderAdapter(ExchangeAdapter):
             "deal_id": str(result.get("deal_id") or ""),
             "broker_sizing": dict(result.get("broker_sizing") or payload.get("broker_sizing") or {}),
         }
-        broker_execution["broker_sizing"] = {
-            "broker": "ctrader",
-            "broker_name": broker_name,
-            "environment": environment,
-            "broker_size": round(float(payload.get("lot_size") or 0.0), 6),
-            "broker_volume": int(payload.get("volume") or 0),
-            "local_position_size": round(float(filled_size or payload.get("local_size") or 0.0), 8),
-            "broker_cash_per_price_unit_per_size": 1.0,
-        }
+        if not broker_execution["broker_sizing"]:
+            broker_execution["broker_sizing"] = {
+                "broker": "ctrader",
+                "broker_name": broker_name,
+                "environment": environment,
+                "broker_size": round(float(payload.get("lot_size") or 0.0), 6),
+                "broker_volume": int(payload.get("volume") or 0),
+                "local_position_size": round(float(filled_size or payload.get("local_size") or 0.0), 8),
+                "broker_cash_per_price_unit_per_size": 1.0,
+            }
+        broker_size = float(broker_execution["broker_sizing"].get("broker_size") or payload.get("lot_size") or 0.0)
+        broker_volume = int(broker_execution["broker_sizing"].get("broker_volume") or payload.get("volume") or 0)
+        local_position_size = float(broker_execution["broker_sizing"].get("local_position_size") or filled_size or payload.get("local_size") or 0.0)
         metadata["broker_execution"] = broker_execution
         metadata.setdefault("take_profit_levels", list(req.metadata.get("take_profit_levels") or []))
         return {
@@ -363,11 +370,11 @@ class CTraderAdapter(ExchangeAdapter):
             "stop_loss": float(payload.get("stop_loss") or 0.0),
             "take_profit": float(payload.get("take_profit") or 0.0),
             "take_profit_levels": list(req.metadata.get("take_profit_levels") or []),
-            "position_size": filled_size,
-            "initial_position_size": filled_size,
-            "broker_position_size": filled_size,
-            "broker_volume": int(payload.get("volume") or 0),
-            "lot_size": float(payload.get("lot_size") or 0.0),
+            "position_size": local_position_size,
+            "initial_position_size": local_position_size,
+            "broker_position_size": local_position_size,
+            "broker_volume": broker_volume,
+            "lot_size": broker_size,
             "metadata": metadata,
         }
 

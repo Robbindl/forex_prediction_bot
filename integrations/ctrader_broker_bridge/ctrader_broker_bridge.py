@@ -13,11 +13,15 @@ from ctrader_open_api.endpoints import EndPoints
 from ctrader_open_api.messages.OpenApiMessages_pb2 import (
     ProtoOAAccountAuthReq,
     ProtoOAApplicationAuthReq,
+    ProtoOAAssetListReq,
+    ProtoOAAssetListRes,
     ProtoOAErrorRes,
     ProtoOAExecutionEvent,
     ProtoOAGetAccountListByAccessTokenReq,
     ProtoOANewOrderReq,
     ProtoOAReconcileReq,
+    ProtoOASpotEvent,
+    ProtoOASubscribeSpotsReq,
     ProtoOASymbolsListReq,
     ProtoOATraderReq,
     ProtoOATraderRes,
@@ -26,6 +30,8 @@ from ctrader_open_api.messages.OpenApiMessages_pb2 import (
     ProtoOAGetAccountListByAccessTokenRes,
     ProtoOASymbolsListRes,
     ProtoOAReconcileRes,
+    ProtoOASymbolByIdReq,
+    ProtoOASymbolByIdRes,
 )
 from ctrader_open_api.messages.OpenApiModelMessages_pb2 import (
     ProtoOAExecutionType,
@@ -93,6 +99,21 @@ def _normalize_name(value: Any) -> str:
     return "".join(ch for ch in str(value or "").upper() if ch.isalnum())
 
 
+def _bool_env(name: str, default: bool = False) -> bool:
+    text = str(os.getenv(name, "")).strip().lower()
+    if not text:
+        return bool(default)
+    if text in {"1", "true", "yes", "on"}:
+        return True
+    if text in {"0", "false", "no", "off"}:
+        return False
+    return bool(default)
+
+
+def _broker_key(value: Any) -> str:
+    return str(value or "").strip().lower().replace(" ", "").replace("_", "")
+
+
 def _message_to_dict(message: Any) -> Dict[str, Any]:
     result: Dict[str, Any] = {}
     if message is None:
@@ -131,8 +152,15 @@ class CTraderOneShot:
         self.token_cache_path.parent.mkdir(parents=True, exist_ok=True)
         self.client: Optional[Client] = None
         self.account_id: Optional[int] = None
+        self.assets_by_id: Dict[int, str] = {}
         self.symbols: List[Any] = []
+        self.light_symbol_by_id: Dict[int, Any] = {}
         self.symbol_lookup: Dict[str, Tuple[int, str]] = {}
+        self._pending_order: Dict[str, Any] = {}
+        self._pending_specs: Dict[str, Any] = {}
+        self._pending_conversions: Dict[str, Dict[str, Any]] = {}
+        self._pending_conversion_by_symbol_id: Dict[int, str] = {}
+        self._last_order_broker_sizing: Optional[Dict[str, Any]] = None
         self._finished = False
 
     def run(self) -> int:
@@ -263,6 +291,16 @@ class CTraderOneShot:
 
     def _after_account_auth(self, _response: Any) -> None:
         assert self.client is not None and self.account_id is not None
+        self.client.send(ProtoOAAssetListReq(ctidTraderAccountId=self.account_id)).addCallbacks(self._after_assets, self._fatal)
+
+    def _after_assets(self, response: Any) -> None:
+        parsed = self._parse(response, ProtoOAAssetListRes)
+        self.assets_by_id = {
+            int(getattr(item, "assetId", 0) or 0): str(getattr(item, "name", "") or getattr(item, "displayName", "") or "").upper()
+            for item in list(getattr(parsed, "asset", []) or [])
+            if int(getattr(item, "assetId", 0) or 0)
+        }
+        assert self.client is not None and self.account_id is not None
         req = ProtoOASymbolsListReq(ctidTraderAccountId=self.account_id, includeArchivedSymbols=False)
         self.client.send(req).addCallbacks(self._after_symbols, self._fatal)
 
@@ -285,8 +323,11 @@ class CTraderOneShot:
 
     def _build_symbol_lookup(self) -> None:
         lookup: Dict[str, Tuple[int, str]] = {}
+        self.light_symbol_by_id = {}
         for item in self.symbols:
             symbol_id = int(getattr(item, "symbolId", 0) or 0)
+            if symbol_id:
+                self.light_symbol_by_id[symbol_id] = item
             raw_name = str(getattr(item, "symbolName", "") or "")
             description = str(getattr(item, "description", "") or "")
             names = {_normalize_name(raw_name), _normalize_name(description)}
@@ -310,6 +351,247 @@ class CTraderOneShot:
             if key and key in self.symbol_lookup:
                 return self.symbol_lookup[key]
         raise RuntimeError(f"cTrader symbol not found for {asset or symbol}")
+
+    def _pepperstone_live_gold_parity_enabled(self) -> bool:
+        if self.environment != "live":
+            return False
+        if _broker_key(os.getenv("CTRADER_EXECUTION_BROKER_NAME", "")) != "pepperstone":
+            return False
+        return _bool_env("PEPPERSTONE_CTRADER_LIVE_GOLD_PIP_PARITY_SIZING", True)
+
+    def _symbol_asset_codes(self, symbol_id: int) -> Tuple[str, str]:
+        light = self.light_symbol_by_id.get(int(symbol_id or 0))
+        if light is None:
+            return "", ""
+        base = self.assets_by_id.get(int(getattr(light, "baseAssetId", 0) or 0), "")
+        quote = self.assets_by_id.get(int(getattr(light, "quoteAssetId", 0) or 0), "")
+        return str(base or "").upper(), str(quote or "").upper()
+
+    def _find_symbol_by_asset_codes(self, base: str, quote: str) -> Tuple[int, str]:
+        base = str(base or "").upper()
+        quote = str(quote or "").upper()
+        for item in self.symbols:
+            symbol_id = int(getattr(item, "symbolId", 0) or 0)
+            item_base, item_quote = self._symbol_asset_codes(symbol_id)
+            if item_base == base and item_quote == quote:
+                return symbol_id, str(getattr(item, "symbolName", "") or "")
+        raise RuntimeError(f"cTrader conversion symbol not found for {base}/{quote}")
+
+    @staticmethod
+    def _symbol_pip_size(symbol: Any) -> float:
+        pip_position = int(getattr(symbol, "pipPosition", 0) or 0)
+        if pip_position <= 0:
+            return 0.0
+        return 10.0 ** (-pip_position)
+
+    @staticmethod
+    def _symbol_lot_size_cents(symbol: Any) -> int:
+        return int(getattr(symbol, "lotSize", 0) or 0)
+
+    @staticmethod
+    def _symbol_volume_to_lots(symbol: Any, volume: int) -> float:
+        lot_size = CTraderOneShot._symbol_lot_size_cents(symbol)
+        if lot_size <= 0:
+            return 0.0
+        return round(float(volume or 0) / float(lot_size), 6)
+
+    @staticmethod
+    def _price_from_spot(symbol: Any, bid: Any, ask: Any) -> float:
+        digits = int(getattr(symbol, "digits", 0) or 0)
+        divisor = 10 ** max(0, digits)
+        bid_value = _safe_float(bid, 0.0) / divisor
+        ask_value = _safe_float(ask, 0.0) / divisor
+        if bid_value > 0.0 and ask_value > 0.0:
+            return (bid_value + ask_value) / 2.0
+        return bid_value or ask_value
+
+    @staticmethod
+    def _snap_volume(symbol: Any, desired_lots: float, *, max_lots_cap: float = 1.0) -> Tuple[int, float]:
+        lot_size = CTraderOneShot._symbol_lot_size_cents(symbol)
+        if lot_size <= 0:
+            raise RuntimeError("cTrader symbol lotSize missing")
+        min_volume = int(getattr(symbol, "minVolume", 0) or 0)
+        max_volume = int(getattr(symbol, "maxVolume", 0) or 0)
+        step_volume = int(getattr(symbol, "stepVolume", 0) or 0)
+        min_lots = max(0.01, min_volume / lot_size if min_volume > 0 else 0.01)
+        max_lots = min(float(max_lots_cap or 1.0), max_volume / lot_size if max_volume > 0 else float(max_lots_cap or 1.0))
+        lots = max(min_lots, min(max_lots, float(desired_lots or 0.0)))
+        lots = round(round(lots / 0.01) * 0.01, 2)
+        volume = int(round(lots * lot_size))
+        if step_volume > 0:
+            volume = int(round(volume / step_volume) * step_volume)
+        if min_volume > 0:
+            volume = max(volume, min_volume)
+        if max_volume > 0:
+            volume = min(volume, max_volume)
+        volume = max(1, volume)
+        return volume, CTraderOneShot._symbol_volume_to_lots(symbol, volume)
+
+    def _pip_value_usd_at_001_lots(self, symbol: Any, symbol_id: int) -> Tuple[float, Dict[str, Any]]:
+        lot_size = self._symbol_lot_size_cents(symbol)
+        pip_size = self._symbol_pip_size(symbol)
+        if lot_size <= 0 or pip_size <= 0:
+            raise RuntimeError("cTrader symbol lotSize or pipPosition missing")
+        _base, quote = self._symbol_asset_codes(symbol_id)
+        quote = quote or "USD"
+        conversion = 1.0
+        conversion_source = "quote_is_usd"
+        if quote != "USD":
+            conversion_meta = self._pending_conversions.get(quote) or {}
+            conversion = float(conversion_meta.get("rate") or 0.0)
+            conversion_source = str(conversion_meta.get("symbol_name") or "")
+            if conversion <= 0.0:
+                raise RuntimeError(f"live USD conversion missing for {quote}")
+        units_at_001_lots = (float(lot_size) * 0.01) / 100.0
+        pip_value_quote = units_at_001_lots * pip_size
+        return pip_value_quote * conversion, {
+            "quote_asset": quote,
+            "pip_size": pip_size,
+            "lot_size_cents": lot_size,
+            "units_at_0_01_lots": units_at_001_lots,
+            "quote_to_usd": conversion,
+            "conversion_source": conversion_source,
+        }
+
+    def _request_symbol_detail(self, label: str, symbol_id: int) -> None:
+        assert self.client is not None and self.account_id is not None
+        self.client.send(ProtoOASymbolByIdReq(ctidTraderAccountId=self.account_id, symbolId=[int(symbol_id)])).addCallbacks(
+            lambda response: self._after_symbol_detail(response, label=label, symbol_id=symbol_id),
+            self._fatal,
+        )
+
+    def _after_symbol_detail(self, response: Any, *, label: str, symbol_id: int) -> None:
+        parsed = self._parse(response, ProtoOASymbolByIdRes)
+        symbols = list(getattr(parsed, "symbol", []) or [])
+        if not symbols:
+            self._finish(False, f"cTrader symbol spec missing for symbolId={symbol_id}")
+            return
+        self._pending_specs[label] = symbols[0]
+        if label == "target":
+            self._request_symbol_detail("gold", int(self._pending_order.get("gold_symbol_id") or 0))
+            return
+        if label == "gold":
+            try:
+                self._prepare_pepperstone_conversion_rates()
+            except Exception as exc:
+                self._finish(False, f"Pepperstone live lot sizing failed: {exc}")
+            return
+        if label.startswith("conversion:"):
+            quote = label.split(":", 1)[1]
+            if quote in self._pending_conversions:
+                self._pending_conversions[quote]["symbol"] = symbols[0]
+            self._maybe_subscribe_conversion_spots()
+
+    def _prepare_pepperstone_conversion_rates(self) -> None:
+        self._pending_conversions = {}
+        for label, symbol_id in (("target", self._pending_order.get("symbol_id")), ("gold", self._pending_order.get("gold_symbol_id"))):
+            _base, quote = self._symbol_asset_codes(int(symbol_id or 0))
+            quote = str(quote or "USD").upper()
+            if quote and quote != "USD" and quote not in self._pending_conversions:
+                try:
+                    conv_symbol_id, conv_name = self._find_symbol_by_asset_codes(quote, "USD")
+                    inverse = False
+                except Exception:
+                    conv_symbol_id, conv_name = self._find_symbol_by_asset_codes("USD", quote)
+                    inverse = True
+                self._pending_conversions[quote] = {
+                    "symbol_id": conv_symbol_id,
+                    "symbol_name": conv_name,
+                    "inverse": inverse,
+                    "rate": 0.0,
+                }
+        if not self._pending_conversions:
+            try:
+                self._submit_pepperstone_gold_parity_order()
+            except Exception as exc:
+                self._finish(False, f"Pepperstone live lot sizing failed: {exc}")
+            return
+        for quote, meta in list(self._pending_conversions.items()):
+            self._request_symbol_detail(f"conversion:{quote}", int(meta["symbol_id"]))
+
+    def _maybe_subscribe_conversion_spots(self) -> None:
+        if not self._pending_conversions:
+            return
+        if any(not meta.get("symbol") for meta in self._pending_conversions.values()):
+            return
+        self._pending_conversion_by_symbol_id = {
+            int(meta["symbol_id"]): quote for quote, meta in self._pending_conversions.items()
+        }
+        assert self.client is not None and self.account_id is not None
+        self.client.send(
+            ProtoOASubscribeSpotsReq(
+                ctidTraderAccountId=self.account_id,
+                symbolId=list(self._pending_conversion_by_symbol_id.keys()),
+                subscribeToSpotTimestamp=True,
+            )
+        ).addCallbacks(lambda _response: None, self._fatal)
+
+    def _handle_spot_event(self, event: ProtoOASpotEvent) -> None:
+        if not self._pending_conversion_by_symbol_id:
+            return
+        symbol_id = int(getattr(event, "symbolId", 0) or 0)
+        quote = self._pending_conversion_by_symbol_id.get(symbol_id)
+        if not quote:
+            return
+        meta = self._pending_conversions.get(quote) or {}
+        symbol = meta.get("symbol")
+        price = self._price_from_spot(symbol, getattr(event, "bid", 0), getattr(event, "ask", 0))
+        if price <= 0.0:
+            return
+        meta["rate"] = (1.0 / price) if meta.get("inverse") else price
+        self._pending_conversions[quote] = meta
+        if all(float(item.get("rate") or 0.0) > 0.0 for item in self._pending_conversions.values()):
+            self._pending_conversion_by_symbol_id = {}
+            try:
+                self._submit_pepperstone_gold_parity_order()
+            except Exception as exc:
+                self._finish(False, f"Pepperstone live lot sizing failed: {exc}")
+
+    def _submit_pepperstone_gold_parity_order(self) -> None:
+        target_symbol = self._pending_specs.get("target")
+        gold_symbol = self._pending_specs.get("gold")
+        if target_symbol is None or gold_symbol is None:
+            self._finish(False, "Pepperstone live lot sizing specs incomplete")
+            return
+        asset = str(self._pending_order.get("asset") or "")
+        target_symbol_id = int(self._pending_order.get("symbol_id") or 0)
+        gold_symbol_id = int(self._pending_order.get("gold_symbol_id") or 0)
+        gold_pip_usd, gold_profile = self._pip_value_usd_at_001_lots(gold_symbol, gold_symbol_id)
+        target_pip_usd, target_profile = self._pip_value_usd_at_001_lots(target_symbol, target_symbol_id)
+        if gold_pip_usd <= 0.0 or target_pip_usd <= 0.0:
+            self._finish(False, "Pepperstone live pip value calculation failed")
+            return
+        if _normalize_name(asset) in {"XAUUSD", "GOLD"}:
+            desired_lots = 0.01
+            reason = "gold benchmark fixed 0.01"
+        else:
+            desired_lots = 0.01 * (gold_pip_usd / target_pip_usd)
+            reason = "gold pip parity"
+            if desired_lots <= 0.01:
+                desired_lots = 0.01
+                reason = "volatility cap 0.01"
+        max_lots_cap = max(0.01, _safe_float(os.getenv("PEPPERSTONE_CTRADER_LIVE_MAX_LOTS", "1.00"), 1.0))
+        desired_lots = min(max_lots_cap, max(0.01, float(desired_lots or 0.01)))
+        volume, broker_lots = self._snap_volume(target_symbol, desired_lots, max_lots_cap=max_lots_cap)
+        sizing = {
+            "sizing_model": "pepperstone_live_gold_0_01_pip_parity",
+            "broker": "ctrader",
+            "broker_name": "pepperstone",
+            "environment": "live",
+            "broker_size": broker_lots,
+            "broker_volume": volume,
+            "local_position_size": round(volume / 100.0, 8),
+            "gold_pip_value_usd_at_0_01_lots": round(gold_pip_usd, 8),
+            "target_pip_value_usd_at_0_01_lots": round(target_pip_usd, 8),
+            "raw_calculated_lots": round(0.01 * (gold_pip_usd / target_pip_usd), 8),
+            "rounded_lots": broker_lots,
+            "min_lots": round(max(0.01, int(getattr(target_symbol, "minVolume", 0) or 0) / max(1, self._symbol_lot_size_cents(target_symbol))), 6),
+            "max_lots": round(min(max_lots_cap, int(getattr(target_symbol, "maxVolume", 0) or 0) / max(1, self._symbol_lot_size_cents(target_symbol))) if int(getattr(target_symbol, "maxVolume", 0) or 0) else max_lots_cap, 6),
+            "reason": reason,
+            "gold_profile": gold_profile,
+            "target_profile": target_profile,
+        }
+        self._submit_market_order(target_symbol_id, str(self._pending_order.get("symbol_name") or ""), volume, broker_sizing=sizing)
 
     def _send_balance(self) -> None:
         assert self.client is not None and self.account_id is not None
@@ -344,8 +626,37 @@ class CTraderOneShot:
         assert self.client is not None and self.account_id is not None
         asset = self.payload.get("asset") or self.payload.get("symbol") or ""
         symbol_id, symbol_name = self._resolve_symbol(asset, self.payload.get("symbol"))
-        side = str(self.payload.get("side") or "BUY").upper()
+        if self._pepperstone_live_gold_parity_enabled():
+            try:
+                gold_symbol_id, gold_symbol_name = self._resolve_symbol("XAU/USD", "XAUUSD")
+            except Exception as exc:
+                self._finish(False, f"Pepperstone live lot sizing requires XAU/USD benchmark spec: {exc}")
+                return
+            self._pending_order = {
+                "asset": asset,
+                "symbol_id": symbol_id,
+                "symbol_name": symbol_name,
+                "gold_symbol_id": gold_symbol_id,
+                "gold_symbol_name": gold_symbol_name,
+            }
+            self._pending_specs = {}
+            self._request_symbol_detail("target", symbol_id)
+            return
         volume = max(1, _safe_int(self.payload.get("volume"), 0))
+        self._submit_market_order(symbol_id, symbol_name, volume)
+
+    def _submit_market_order(
+        self,
+        symbol_id: int,
+        symbol_name: str,
+        volume: int,
+        *,
+        broker_sizing: Optional[Dict[str, Any]] = None,
+    ) -> None:
+        assert self.client is not None and self.account_id is not None
+        side = str(self.payload.get("side") or "BUY").upper()
+        volume = max(1, int(volume or 0))
+        self._last_order_broker_sizing = dict(broker_sizing or {})
         req_kwargs = {
             "ctidTraderAccountId": self.account_id,
             "symbolId": symbol_id,
@@ -370,6 +681,7 @@ class CTraderOneShot:
 
     def _send_close_position(self) -> None:
         assert self.client is not None and self.account_id is not None
+        self._last_order_broker_sizing = None
         position_id = _safe_int(self.payload.get("position_id") or self.payload.get("broker_trade_id") or self.payload.get("trade_id"), 0)
         volume = max(1, _safe_int(self.payload.get("volume"), 0))
         if position_id <= 0:
@@ -381,6 +693,7 @@ class CTraderOneShot:
 
     def _send_update_stop(self) -> None:
         assert self.client is not None and self.account_id is not None
+        self._last_order_broker_sizing = None
         position_id = _safe_int(self.payload.get("position_id") or self.payload.get("broker_trade_id") or self.payload.get("trade_id"), 0)
         stop_loss = _safe_float(self.payload.get("stop_loss"), 0.0)
         if position_id <= 0 or stop_loss <= 0:
@@ -412,6 +725,10 @@ class CTraderOneShot:
         volume = _safe_int(getattr(deal, "filledVolume", 0) or getattr(deal, "volume", 0) or getattr(order, "executedVolume", 0), 0)
         if not symbol_id:
             symbol_id = int(getattr(deal, "symbolId", 0) or 0)
+        broker_sizing = dict(self._last_order_broker_sizing or {})
+        if broker_sizing:
+            broker_sizing["filled_volume"] = volume
+            broker_sizing["filled_lots"] = broker_sizing.get("broker_size")
         self._finish(
             True,
             "execution accepted",
@@ -423,6 +740,7 @@ class CTraderOneShot:
             volume=volume,
             symbol_id=symbol_id,
             symbol_name=symbol_name,
+            broker_sizing=broker_sizing,
             account_id=str(self.account_id or ""),
             environment=self.environment,
             raw=_message_to_dict(parsed),
@@ -433,6 +751,15 @@ class CTraderOneShot:
             _stderr(f"Disconnected from cTrader: {reason}")
 
     def _on_message(self, _client: Client, message: Any) -> None:
+        if isinstance(message, ProtoOASpotEvent):
+            self._handle_spot_event(message)
+            return
+        if int(getattr(message, "payloadType", 0) or 0) == int(ProtoOASpotEvent().payloadType):
+            try:
+                self._handle_spot_event(self._parse(message, ProtoOASpotEvent))
+                return
+            except Exception:
+                pass
         if isinstance(message, ProtoOAErrorRes) and not self._finished:
             code = str(getattr(message, "errorCode", "") or "ctrader_error")
             description = str(getattr(message, "description", "") or code)
