@@ -440,7 +440,7 @@ class TradingCore:
                 categories = [item.lower() for item in self._csv_env(f"{profile_prefix}_ROUTE_CATEGORIES")]
                 assets = self._csv_env(f"{profile_prefix}_ROUTE_ASSETS")
             if not categories:
-                categories = [item.lower() for item in self._csv_env("CTRADER_EXECUTION_ROUTE_CATEGORIES", "forex,crypto,commodities")]
+                categories = [item.lower() for item in self._csv_env("CTRADER_EXECUTION_ROUTE_CATEGORIES", "forex,crypto,commodities,indices")]
             if not assets:
                 assets = self._csv_env("CTRADER_EXECUTION_ROUTE_ASSETS")
             return categories, assets

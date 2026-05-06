@@ -107,7 +107,7 @@ CTRADER_EXECUTION_TOKEN_CACHE_PATH = Path(
 )
 CTRADER_EXECUTION_ROUTE_CATEGORIES = [
     item.strip().lower()
-    for item in os.getenv("CTRADER_EXECUTION_ROUTE_CATEGORIES", "forex,crypto,commodities").split(",")
+    for item in os.getenv("CTRADER_EXECUTION_ROUTE_CATEGORIES", "forex,crypto,commodities,indices").split(",")
     if item.strip()
 ]
 CTRADER_EXECUTION_ROUTE_ASSETS = [
@@ -122,7 +122,7 @@ CTRADER_EXECUTION_DISABLED_ASSETS = [
 ]
 CTRADER_EXECUTION_ALLOWED_CATEGORIES = [
     item.strip().lower()
-    for item in os.getenv("CTRADER_EXECUTION_ALLOWED_CATEGORIES", "forex,crypto,commodities").split(",")
+    for item in os.getenv("CTRADER_EXECUTION_ALLOWED_CATEGORIES", "forex,crypto,commodities,indices").split(",")
     if item.strip()
 ]
 BROKER_STARTUP_TRADE_FREEZE_SECONDS = _parse_float(os.getenv("BROKER_STARTUP_TRADE_FREEZE_SECONDS", "300"), 300.0)
