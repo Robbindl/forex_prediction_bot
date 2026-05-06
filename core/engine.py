@@ -249,6 +249,7 @@ class TradingCore:
         self._last_broker_balance_sync = 0.0
         self._last_broker_balance_snapshot: Dict[str, Any] = {}
         self._last_broker_position_reconcile = 0.0
+        self._broker_missing_position_first_seen: Dict[str, float] = {}
         self._broker_issue_alerts: Dict[str, float] = {}
         self._started_monotonic = time.monotonic()
         self._last_execution_monotonic = 0.0
@@ -2138,6 +2139,79 @@ class TradingCore:
         except Exception:
             return 999999.0
 
+    def _broker_missing_position_confirmed(self, pos: Dict[str, Any], key: str, now: float) -> bool:
+        if not hasattr(self, "_broker_missing_position_first_seen"):
+            self._broker_missing_position_first_seen = {}
+        grace = self._broker_missing_grace_seconds()
+        if self._position_age_seconds(pos) < grace:
+            return False
+
+        first_seen = float(self._broker_missing_position_first_seen.get(key) or 0.0)
+        if first_seen <= 0.0:
+            self._broker_missing_position_first_seen[key] = now
+            logger.warning(
+                f"[TradingCore] IG reconciliation missing {pos.get('asset')} {key}; "
+                f"waiting {int(round(grace))}s before closing local state"
+            )
+            return False
+
+        return (now - first_seen) >= grace
+
+    def _ig_reconciliation_close_snapshot(self, pos: Dict[str, Any]) -> Dict[str, Any]:
+        deal_id = str(pos.get("broker_trade_id") or pos.get("trade_id") or "").strip()
+        if not deal_id:
+            return {}
+        try:
+            from services.ig_market_bridge import ig_market_bridge
+
+            end_utc = datetime.now(timezone.utc)
+            start_utc = end_utc - timedelta(days=2)
+            payload = ig_market_bridge._request(
+                "GET",
+                "/history/activity",
+                params={
+                    "from": start_utc.strftime("%Y-%m-%dT%H:%M:%S"),
+                    "to": end_utc.strftime("%Y-%m-%dT%H:%M:%S"),
+                    "detailed": "true",
+                    "pageSize": "100",
+                },
+                version="3",
+            )
+        except Exception as exc:
+            logger.debug(f"[TradingCore] IG close activity lookup failed for {deal_id}: {exc}")
+            return {}
+
+        short_id = deal_id[-8:] if len(deal_id) >= 8 else deal_id
+        for item in payload.get("activities") or []:
+            if not isinstance(item, dict):
+                continue
+            details = item.get("details") if isinstance(item.get("details"), dict) else {}
+            actions = details.get("actions") if isinstance(details.get("actions"), list) else []
+            action_match = any(
+                isinstance(action, dict)
+                and str(action.get("affectedDealId") or "").strip() == deal_id
+                and str(action.get("actionType") or "").upper() == "POSITION_CLOSED"
+                for action in actions
+            )
+            text = f"{item.get('description') or ''} {item.get('dealId') or ''}"
+            if not action_match and deal_id not in text and short_id not in text:
+                continue
+            level = self._normalize_position_price(pos, details.get("level") or item.get("level") or 0.0)
+            if level <= 0:
+                continue
+            return {
+                "source": "ig_history_activity",
+                "broker_close_deal_id": str(item.get("dealId") or ""),
+                "closed_at": str(item.get("date") or ""),
+                "channel": str(item.get("channel") or ""),
+                "status": str(item.get("status") or ""),
+                "description": str(item.get("description") or ""),
+                "close_side": str(details.get("direction") or ""),
+                "raw_level": self._float_or_zero(details.get("level") or item.get("level")),
+                "exit_price": level,
+            }
+        return {}
+
     def _extract_ig_position_snapshot(self, local_pos: Dict[str, Any], raw_item: Dict[str, Any]) -> Dict[str, Any]:
         snapshot = self._normalize_broker_position_prices(local_pos)
         broker_pos = raw_item.get("position") if isinstance(raw_item.get("position"), dict) else {}
@@ -2253,12 +2327,17 @@ class TradingCore:
         entry = self._normalize_position_price(pos, pos.get("entry_price") or current)
         direction = str(pos.get("direction") or pos.get("signal") or "BUY").upper()
         size = self._float_or_zero(pos.get("position_size"))
+        close_snapshot = self._ig_reconciliation_close_snapshot(pos)
+        broker_exit = self._float_or_zero(close_snapshot.get("exit_price"))
+        if broker_exit > 0:
+            current = broker_exit
         pnl = self._manual_close_pnl(pos, entry, current, size, direction)
         metadata = dict(pos.get("metadata") or {})
         metadata["broker_reconciliation_close"] = {
             "source": "ig_positions",
             "closed_at": datetime.now(timezone.utc).isoformat(),
             "reason": "position no longer appears in IG open positions",
+            "broker_activity": close_snapshot,
         }
         closed = self.state.close_position(
             trade_id,
@@ -2312,13 +2391,22 @@ class TradingCore:
         rematched = 0
         closed_missing = 0
         used_deal_ids: set[str] = set()
+        active_missing_keys: set[str] = set()
+        if not hasattr(self, "_broker_missing_position_first_seen"):
+            self._broker_missing_position_first_seen = {}
         for pos in list(self.state.get_open_positions() or []):
             if not self._is_broker_managed_position(pos):
                 continue
             deal_id = str(pos.get("broker_trade_id") or pos.get("trade_id") or "").strip()
+            trade_id = str(pos.get("trade_id") or deal_id or "").strip()
+            missing_key = deal_id or trade_id
+            if missing_key:
+                active_missing_keys.add(missing_key)
             raw_item = by_deal_id.get(deal_id)
             if raw_item:
                 used_deal_ids.add(deal_id)
+                if missing_key:
+                    self._broker_missing_position_first_seen.pop(missing_key, None)
                 snapshot = self._extract_ig_position_snapshot(pos, raw_item)
                 if snapshot != pos:
                     self.state.sync_open_position(snapshot)
@@ -2330,6 +2418,8 @@ class TradingCore:
                 new_deal_id = str(broker_pos.get("dealId") or "").strip()
                 if new_deal_id:
                     used_deal_ids.add(new_deal_id)
+                if missing_key:
+                    self._broker_missing_position_first_seen.pop(missing_key, None)
                 snapshot = self._extract_ig_position_snapshot(pos, raw_item)
                 metadata = dict(snapshot.get("metadata") or {})
                 metadata["broker_reconciliation_deal_remap"] = {
@@ -2347,10 +2437,18 @@ class TradingCore:
                     f"{deal_id or 'unknown'} -> {new_deal_id or 'unknown'}"
                 )
                 continue
-            if self._position_age_seconds(pos) < self._broker_missing_grace_seconds():
+            if not missing_key or not self._broker_missing_position_confirmed(pos, missing_key, now):
                 continue
             if self._close_local_broker_position_missing_on_ig(pos):
+                self._broker_missing_position_first_seen.pop(missing_key, None)
                 closed_missing += 1
+
+        if self._broker_missing_position_first_seen:
+            self._broker_missing_position_first_seen = {
+                key: first_seen
+                for key, first_seen in self._broker_missing_position_first_seen.items()
+                if key in active_missing_keys
+            }
 
         if synced or rematched or closed_missing:
             logger.info(
@@ -3575,12 +3673,30 @@ class TradingCore:
         if initial_risk <= 0.0:
             return 0.0
 
+        side = str(direction or "BUY").upper()
+        if side == "BUY":
+            favorable_extreme = float(pos.get("highest_price", entry) or entry)
+            progress_rr = (favorable_extreme - entry) / max(initial_risk, 1e-9)
+        else:
+            favorable_extreme = float(pos.get("lowest_price", entry) or entry)
+            progress_rr = (entry - favorable_extreme) / max(initial_risk, 1e-9)
+
         candidate = dict(pos)
         if bool(management.get("break_even_after_partial")) and int(candidate.get("tp_hit", 0) or 0) > 0:
-            if direction == "BUY" and entry > stop_loss:
+            if side == "BUY" and entry > stop_loss:
                 candidate["stop_loss"] = round(entry, 10)
-            elif direction == "SELL" and entry < stop_loss:
+            elif side == "SELL" and entry < stop_loss:
                 candidate["stop_loss"] = round(entry, 10)
+
+        protect_enabled = self._broker_env_bool("BROKER_BREAKEVEN_PROTECT_ENABLED", True)
+        protect_rr = max(0.0, self._broker_env_float("BROKER_BREAKEVEN_PROTECT_RR", 0.45))
+        protect_buffer_r = max(0.0, self._broker_env_float("BROKER_BREAKEVEN_PROTECT_BUFFER_R", 0.02))
+        if protect_enabled and protect_rr > 0.0 and progress_rr >= protect_rr:
+            buffer = initial_risk * protect_buffer_r
+            protected_stop = entry + buffer if side == "BUY" else entry - buffer
+            current_candidate_stop = self._float_or_zero(candidate.get("stop_loss")) or stop_loss
+            if self._broker_stop_is_better(side, protected_stop, current_candidate_stop):
+                candidate["stop_loss"] = round(protected_stop, 10)
 
         try:
             trail_activation_rr = max(0.5, float(management.get("trail_activation_rr", 1.0) or 1.0))
