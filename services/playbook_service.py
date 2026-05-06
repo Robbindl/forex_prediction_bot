@@ -274,6 +274,16 @@ _DEFAULT_PLAYBOOKS = (
     "aggressive_expansion",
 )
 
+_INDEX_ALLOWED_SESSIONS: Dict[str, Tuple[str, ...]] = {
+    "US500": ("us_overlap", "us_open", "us_core"),
+    "US100": ("us_overlap", "us_open", "us_core"),
+    "US30": ("us_overlap", "us_open", "us_core"),
+    "UK100": ("europe_open", "europe_core", "us_overlap"),
+    "GER40": ("europe_open", "europe_core", "us_overlap"),
+    "AUS200": ("asia_core",),
+    "JPN225": ("asia_core",),
+}
+
 _PROFILES: Dict[str, _PlaybookProfile] = {
     "crypto": _PlaybookProfile(0.58, 0.48, 0.46, "5m", ("asia", "europe", "us"), 2.6, 1.20, 1.12),
     "forex": _PlaybookProfile(0.56, 0.52, 0.52, "15m", ("asia", "europe", "us"), 1.6, 0.85, 0.75),
@@ -292,10 +302,13 @@ _ASSET_PLANS: Dict[str, _AssetPlaybookPlan] = {
     "XAG/USD": _AssetPlaybookPlan(_DEFAULT_PLAYBOOKS, ("asia", "europe", "us"), "15m"),
     "WTI": _AssetPlaybookPlan(_DEFAULT_PLAYBOOKS, ("us_overlap", "us_open", "us_core"), "15m"),
     "USOIL": _AssetPlaybookPlan(_DEFAULT_PLAYBOOKS, ("us_overlap", "us_open", "us_core"), "15m"),
-    "US500": _AssetPlaybookPlan(_DEFAULT_PLAYBOOKS, ("us_overlap", "us_open", "us_core"), "15m", True),
-    "US100": _AssetPlaybookPlan(_DEFAULT_PLAYBOOKS, ("us_overlap", "us_open", "us_core"), "15m", True),
-    "US30": _AssetPlaybookPlan(_DEFAULT_PLAYBOOKS, ("us_overlap", "us_open", "us_core"), "15m", True),
-    "UK100": _AssetPlaybookPlan(_DEFAULT_PLAYBOOKS, ("europe_open", "europe_core"), "15m"),
+    "US500": _AssetPlaybookPlan(_DEFAULT_PLAYBOOKS, _INDEX_ALLOWED_SESSIONS["US500"], "15m", True),
+    "US100": _AssetPlaybookPlan(_DEFAULT_PLAYBOOKS, _INDEX_ALLOWED_SESSIONS["US100"], "15m", True),
+    "US30": _AssetPlaybookPlan(_DEFAULT_PLAYBOOKS, _INDEX_ALLOWED_SESSIONS["US30"], "15m", True),
+    "UK100": _AssetPlaybookPlan(_DEFAULT_PLAYBOOKS, _INDEX_ALLOWED_SESSIONS["UK100"], "15m"),
+    "GER40": _AssetPlaybookPlan(_DEFAULT_PLAYBOOKS, _INDEX_ALLOWED_SESSIONS["GER40"], "15m"),
+    "AUS200": _AssetPlaybookPlan(_DEFAULT_PLAYBOOKS, _INDEX_ALLOWED_SESSIONS["AUS200"], "15m"),
+    "JPN225": _AssetPlaybookPlan(_DEFAULT_PLAYBOOKS, _INDEX_ALLOWED_SESSIONS["JPN225"], "15m"),
 }
 
 _REAL_DEPTH_MODES = {
@@ -342,7 +355,7 @@ class PlaybookService:
         category_key = str(category or "").strip().lower()
         canonical = str(asset or "").strip().upper()
         if category_key == "indices":
-            return ("europe_open", "europe_core") if canonical == "UK100" else ("us_overlap", "us_open", "us_core")
+            return _INDEX_ALLOWED_SESSIONS.get(canonical, ("us_overlap", "us_open", "us_core"))
         return profile.allowed_sessions
 
     def _session_allowed(self, asset: str, category: str) -> Tuple[bool, str, Tuple[str, ...]]:
@@ -765,6 +778,55 @@ class PlaybookService:
             "context_conflict_components": int(context_profile.get("conflict_components", 0) or 0),
         }
 
+    def _momentum_continuation_relief(
+        self,
+        *,
+        playbook: str,
+        category: str,
+        structure: Dict[str, Any],
+        context_profile: Dict[str, Any],
+        direction: str,
+    ) -> bool:
+        if playbook not in {"breakout_continuation", "breakout_retest"}:
+            return False
+        sign = _playbook_direction_sign(direction)
+        if sign == 0:
+            return False
+
+        category_key = str(category or "").strip().lower()
+        thresholds = {
+            "forex": {"alignment": 0.58, "setup": 0.48, "target": 0.16, "flow": 0.30, "context": 0.14, "support": 1},
+            "commodities": {"alignment": 0.60, "setup": 0.45, "target": 0.14, "flow": 0.32, "context": 0.16, "support": 1},
+            "indices": {"alignment": 0.62, "setup": 0.48, "target": 0.16, "flow": 0.34, "context": 0.16, "support": 1},
+            "crypto": {"alignment": 0.66, "setup": 0.46, "target": 0.18, "flow": 0.38, "context": 0.18, "support": 2},
+        }.get(category_key, {"alignment": 0.62, "setup": 0.50, "target": 0.16, "flow": 0.34, "context": 0.16, "support": 1})
+
+        alignment = _safe_float(structure.get("alignment_score"), 0.0)
+        setup = _safe_float(structure.get("setup_quality"), 0.0)
+        target = _safe_float(structure.get("target_efficiency_score"), 0.0)
+        extension = _safe_float(structure.get("extension_score"), 0.0)
+        support = int(context_profile.get("support_components", 0) or 0)
+        conflict = int(context_profile.get("conflict_components", 0) or 0)
+        flow = max(
+            _safe_float(context_profile.get("micro_support"), 0.0),
+            _safe_float(context_profile.get("cross_support"), 0.0),
+            _safe_float(context_profile.get("whale_support"), 0.0),
+        )
+        context_score = _safe_float(context_profile.get("score"), 0.0)
+        trigger_aligned = bool(structure.get("trigger_trend_aligned")) or _trend_sign(structure.get("trend_5m")) == sign
+
+        return bool(
+            trigger_aligned
+            and conflict == 0
+            and support >= int(thresholds["support"])
+            and alignment >= float(thresholds["alignment"])
+            and setup >= float(thresholds["setup"])
+            and target >= float(thresholds["target"])
+            and extension <= 2.0
+            and flow >= float(thresholds["flow"])
+            and context_score >= float(thresholds["context"])
+        )
+
     def _qualify_candidate(
         self,
         candidate: Dict[str, Any],
@@ -807,7 +869,13 @@ class PlaybookService:
             return False, f"bias_conflict:{playbook}"
         if alignment < 0.36 or setup < 0.32:
             return False, f"setup_quality_too_weak:{playbook}"
-        if cluster > 0.28:
+        if cluster > 0.28 and not self._momentum_continuation_relief(
+            playbook=playbook,
+            category=category,
+            structure=structure,
+            context_profile=context_profile,
+            direction=direction,
+        ):
             return False, f"cluster_risk:{playbook}"
         if playbook == "aggressive_expansion":
             if not bool(structure.get("entry_confirmation_ready")) and not depth_override:
@@ -883,7 +951,15 @@ class PlaybookService:
             _safe_float(context_profile.get("cross_support"), 0.0),
             _safe_float(context_profile.get("whale_support"), 0.0),
         )
-        if conflict > 0 or cluster > 0.24:
+        if conflict > 0:
+            return None
+        if cluster > 0.24 and not self._momentum_continuation_relief(
+            playbook="breakout_continuation",
+            category=category,
+            structure=structure,
+            context_profile=context_profile,
+            direction=direction,
+        ):
             return None
         if alignment < 0.50 or setup < 0.45 or target < 0.08:
             return None
