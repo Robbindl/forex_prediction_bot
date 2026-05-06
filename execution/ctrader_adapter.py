@@ -42,6 +42,11 @@ _SUPPORTED_ASSETS: Dict[str, Dict[str, Any]] = {
     "USD/JPY": {"category": "forex", "aliases": ("USDJPY",)},
     "USD/CAD": {"category": "forex", "aliases": ("USDCAD",)},
     "USD/CHF": {"category": "forex", "aliases": ("USDCHF",)},
+    "BTC-USD": {"category": "crypto", "aliases": ("BTCUSD", "BTC/USD", "BITCOIN")},
+    "ETH-USD": {"category": "crypto", "aliases": ("ETHUSD", "ETH/USD", "ETHEREUM")},
+    "BNB-USD": {"category": "crypto", "aliases": ("BNBUSD", "BNB/USD", "BINANCECOIN")},
+    "SOL-USD": {"category": "crypto", "aliases": ("SOLUSD", "SOL/USD", "SOLANA")},
+    "XRP-USD": {"category": "crypto", "aliases": ("XRPUSD", "XRP/USD", "RIPPLE")},
     "XAU/USD": {"category": "commodities", "aliases": ("XAUUSD", "GOLD")},
     "XAG/USD": {"category": "commodities", "aliases": ("XAGUSD", "SILVER")},
     "WTI": {"category": "commodities", "aliases": ("USOIL", "WTI", "CRUDE", "USCRUDE")},
@@ -175,7 +180,7 @@ class CTraderAdapter(ExchangeAdapter):
     def _allowed_categories(self) -> set[str]:
         raw = self._profile_env("ALLOWED_CATEGORIES", ",".join(CTRADER_EXECUTION_ALLOWED_CATEGORIES))
         allowed = {item.strip().lower() for item in raw.replace(";", ",").split(",") if item.strip()}
-        return allowed or {"forex", "commodities"}
+        return allowed or {"forex", "crypto", "commodities"}
 
     def _credentials_ready(self) -> bool:
         profile = self._profile_config()
@@ -188,8 +193,6 @@ class CTraderAdapter(ExchangeAdapter):
         if canonical in normalized_disabled or _symbol_key(canonical) in normalized_disabled:
             return False, f"cTrader execution disabled for {canonical}"
         category = str(category or _SUPPORTED_ASSETS.get(canonical, {}).get("category") or "").strip().lower()
-        if category == "crypto":
-            return False, "cTrader execution profile does not route crypto; use IG or another crypto-capable venue"
         if category not in self._allowed_categories():
             return False, f"cTrader execution category not allowed: {category or 'unknown'}"
         if canonical not in _SUPPORTED_ASSETS:

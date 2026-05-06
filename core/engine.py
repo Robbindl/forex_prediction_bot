@@ -427,8 +427,23 @@ class TradingCore:
                 categories = ["forex", "crypto", "commodities", "indices"]
             return categories, self._csv_env("IG_EXECUTION_ROUTE_ASSETS")
         if provider == "ctrader":
-            categories = [item.lower() for item in self._csv_env("CTRADER_EXECUTION_ROUTE_CATEGORIES", "forex,commodities")]
-            return categories, self._csv_env("CTRADER_EXECUTION_ROUTE_ASSETS")
+            broker_name = str(self.active_execution_broker_state().get("broker_name") or "").strip().lower()
+            broker_key = broker_name.replace(" ", "").replace("_", "")
+            profile_prefix = ""
+            if broker_key == "pepperstone":
+                profile_prefix = "PEPPERSTONE_CTRADER_EXECUTION"
+            elif broker_key in {"icmarkets", "icmarket"}:
+                profile_prefix = "ICMARKETS_CTRADER_EXECUTION"
+            categories: List[str] = []
+            assets: List[str] = []
+            if profile_prefix:
+                categories = [item.lower() for item in self._csv_env(f"{profile_prefix}_ROUTE_CATEGORIES")]
+                assets = self._csv_env(f"{profile_prefix}_ROUTE_ASSETS")
+            if not categories:
+                categories = [item.lower() for item in self._csv_env("CTRADER_EXECUTION_ROUTE_CATEGORIES", "forex,crypto,commodities")]
+            if not assets:
+                assets = self._csv_env("CTRADER_EXECUTION_ROUTE_ASSETS")
+            return categories, assets
         return [], []
 
     def _ensure_execution_adapter_registered(self, provider: str) -> None:
