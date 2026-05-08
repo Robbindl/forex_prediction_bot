@@ -73,6 +73,9 @@ _WATCHLISTS_TTL_SEC = max(300.0, _env_float("IG_WATCHLISTS_TTL_SEC", 60 * 60))
 _CLIENT_SENTIMENT_TTL_SEC = 300.0
 _CLIENT_SENTIMENT_REST_ENABLED = _env_bool("IG_CLIENT_SENTIMENT_REST_ENABLED", False)
 _ACTIVITY_TTL_SEC = max(300.0, _env_float("IG_ACTIVITY_TTL_SEC", 10 * 60))
+_REST_TIMEOUT_SEC = max(5.0, _env_float("IG_REST_TIMEOUT_SECONDS", 25.0))
+_REST_GET_RETRIES = max(0, int(_env_float("IG_REST_GET_RETRIES", 1)))
+_REST_RETRY_BACKOFF_SEC = max(0.1, _env_float("IG_REST_RETRY_BACKOFF_SECONDS", 1.5))
 _MIN_TOKEN_TTL_SEC = 5.0
 _TOKEN_EXPIRY_SKEW_SEC = 15.0
 _STREAMING_SESSION_TTL_SEC = 5 * 60.0
@@ -1359,9 +1362,11 @@ class IGMarketBridge:
         for item in activities:
             if not isinstance(item, dict):
                 continue
-            details = list(item.get("details") or [])
+            raw_details = item.get("details")
+            details = [raw_details] if isinstance(raw_details, dict) else list(raw_details or [])
             market_name = ""
             market_epic = ""
+            affected_deal_id = ""
             for detail in details:
                 if not isinstance(detail, dict):
                     continue
@@ -1369,6 +1374,10 @@ class IGMarketBridge:
                     market_name = str(detail.get("marketName") or "")
                 if not market_epic:
                     market_epic = str(detail.get("epic") or "")
+                actions = detail.get("actions") if isinstance(detail.get("actions"), list) else []
+                for action in actions:
+                    if isinstance(action, dict) and not affected_deal_id:
+                        affected_deal_id = str(action.get("affectedDealId") or "")
             simplified.append(
                 {
                     "date": str(item.get("date") or ""),
@@ -1376,6 +1385,7 @@ class IGMarketBridge:
                     "channel": str(item.get("channel") or ""),
                     "description": str(item.get("description") or ""),
                     "deal_id": str(item.get("dealId") or ""),
+                    "affected_deal_id": affected_deal_id,
                     "market_name": market_name,
                     "market_epic": market_epic,
                     "status": str(item.get("status") or ""),
@@ -1484,7 +1494,7 @@ class IGMarketBridge:
             f"{self._base_url}{_SESSION_ENDPOINT}",
             params={"fetchSessionTokens": "true"},
             headers=headers,
-            timeout=15,
+            timeout=_REST_TIMEOUT_SEC,
         )
         body = self._parse_json(response)
         if not response.ok:
@@ -1693,7 +1703,7 @@ class IGMarketBridge:
             f"{self._base_url}{_SESSION_ENDPOINT}",
             json=payload,
             headers=headers,
-            timeout=15,
+            timeout=_REST_TIMEOUT_SEC,
         )
         body = self._parse_json(response)
         if not response.ok:
@@ -1713,7 +1723,7 @@ class IGMarketBridge:
             f"{self._base_url}{_SESSION_REFRESH_ENDPOINT}",
             json={"refresh_token": self._refresh_token},
             headers=headers,
-            timeout=15,
+            timeout=_REST_TIMEOUT_SEC,
         )
         body = self._parse_json(response)
         if not response.ok:
@@ -1850,14 +1860,23 @@ class IGMarketBridge:
         if self._account_id:
             headers["IG-ACCOUNT-ID"] = self._account_id
 
-        response = self._session.request(
-            method=method.upper(),
-            url=f"{self._base_url}{path}",
-            params=params,
-            json=json_body,
-            headers=headers,
-            timeout=15,
-        )
+        method_upper = method.upper()
+        max_attempts = 1 + (_REST_GET_RETRIES if method_upper == "GET" else 0)
+        for attempt in range(max_attempts):
+            try:
+                response = self._session.request(
+                    method=method_upper,
+                    url=f"{self._base_url}{path}",
+                    params=params,
+                    json=json_body,
+                    headers=headers,
+                    timeout=_REST_TIMEOUT_SEC,
+                )
+                break
+            except (requests.Timeout, requests.ConnectionError):
+                if attempt >= max_attempts - 1:
+                    raise
+                time.sleep(_REST_RETRY_BACKOFF_SEC * float(attempt + 1))
         body = self._parse_json(response)
         if response.status_code == 401 and allow_retry:
             with self._lock:
