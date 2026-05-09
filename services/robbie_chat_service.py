@@ -53,8 +53,8 @@ _SESSION_FILE = Path("data/robbie_chat_sessions.json")
 _SESSION_FILE.parent.mkdir(exist_ok=True)
 _MAX_HISTORY_MESSAGES = max(2, int(ROBBIE_CHAT_HISTORY_LIMIT or 6)) * 2
 _ASSET_ALIAS_PATTERNS: List[Tuple[re.Pattern[str], str]] = []
-_RUNTIME_FACT_INTENTS = {"issues", "learning", "stop_loss", "adjustment", "market", "positions", "trade_why", "calendar", "weekly", "schedule", "logs", "codebase", "runtime_control"}
-_WORLD_KNOWLEDGE_INTENTS = {"general", "macro", "forecast", "market", "trade_why", "stop_loss", "learning", "adjustment", "calendar", "weekly"}
+_RUNTIME_FACT_INTENTS = {"issues", "learning", "stop_loss", "adjustment", "market", "positions", "trade_why", "trade_result", "calendar", "weekly", "schedule", "logs", "codebase", "runtime_control"}
+_WORLD_KNOWLEDGE_INTENTS = {"general", "macro", "forecast", "market", "trade_why", "trade_result", "stop_loss", "learning", "adjustment", "calendar", "weekly"}
 _LOG_CONTEXT_TERMS = (
     "log",
     "logs",
@@ -646,6 +646,24 @@ def _resolve_asset_from_text(question: str, fallback: str = "") -> str:
     return ""
 
 
+def _question_is_greeting_only(question: str) -> bool:
+    q = " ".join(str(question or "").strip().lower().split())
+    if not q:
+        return False
+    return bool(
+        re.fullmatch(
+            r"(?:hi|hello|hey|yo|morning|good morning|afternoon|good afternoon|evening|good evening|thanks|thank you|thank you robbie|thanks robbie)[!. ]*",
+            q,
+        )
+    )
+
+
+def _question_should_use_asset_context(question: str, intent: str) -> bool:
+    if _question_is_greeting_only(question):
+        return False
+    return bool(intent)
+
+
 class ChatSessionStore:
     def __init__(self, path: Optional[Path] = None):
         self._path = Path(path or _SESSION_FILE)
@@ -753,7 +771,12 @@ class RobbieChatService:
         if isinstance(attachment, dict) and attachment:
             self._sessions.set_attachment(chat_id, attachment)
         session = self._sessions.get(chat_id)
-        focus_asset = _resolve_asset_from_text(question, asset_hint or session.get("last_asset", ""))
+        intent = self._classify_intent(question)
+        explicit_focus_asset = _resolve_asset_from_text(question, "")
+        use_asset_context = _question_should_use_asset_context(question, intent)
+        focus_asset = explicit_focus_asset
+        if not focus_asset and use_asset_context:
+            focus_asset = _resolve_asset_from_text("", asset_hint or session.get("last_asset", ""))
         include_attachment_context = bool(attachment) or _question_mentions_attachment(question)
         attachment_snapshot = dict(attachment or {}) if attachment else dict(session.get("last_attachment") or {})
         runtime = self._build_runtime_context(
@@ -761,8 +784,8 @@ class RobbieChatService:
             focus_asset,
             question=question,
             attachment=attachment_snapshot if include_attachment_context else None,
+            allow_default_focus=use_asset_context,
         )
-        intent = self._classify_intent(question)
         deterministic = self._answer_deterministic(question, runtime, session, intent=intent, chat_id=chat_id)
         response = self._answer_with_optional_deepseek(question, runtime, session, deterministic, intent)
         self._sessions.append_turn(
@@ -781,6 +804,7 @@ class RobbieChatService:
         *,
         question: str = "",
         attachment: Optional[Dict[str, Any]] = None,
+        allow_default_focus: bool = True,
     ) -> Dict[str, Any]:
         core = trading_system
         health: Dict[str, Any] = {}
@@ -821,7 +845,7 @@ class RobbieChatService:
             except Exception:
                 balance = 0.0
 
-        if not focus_asset:
+        if not focus_asset and allow_default_focus:
             focus_asset = self._default_focus_asset(positions, closed_trades)
 
         current_trade = self._current_trade_for_asset(positions, focus_asset)
@@ -1683,6 +1707,13 @@ class RobbieChatService:
             return "market"
         if any(token in q for token in ("open position", "running trade", "current trade", "current position", "what are you in")):
             return "positions"
+        if (
+            re.search(r"\b(?:hit|hits|reached|reaches|touched|touches)\s+(?:tp\s*)?\d+\b", q)
+            or re.search(r"\b(?:tp\s*\d+|tp\d+|take profit|profit target|target\s+\d+|target hit|tp hit)\b", q)
+            or any(token in q for token in ("congrats", "congratulations", "well done", "nice trade", "good trade"))
+            or re.search(r"\b(?:closed|finished)\b.*\b(?:profit|target|tp|trade)\b", q)
+        ):
+            return "trade_result"
         if any(token in q for token in ("why did you choose", "why choose", "why this trade", "why take", "why did you buy", "why did you sell")) or re.search(r"\bwhy\s+did\b.*\bclose\b", q):
             return "trade_why"
         return "general"
@@ -1729,6 +1760,8 @@ class RobbieChatService:
             return self._market_response(runtime, focus_asset)
         if intent == "positions":
             return self._positions_response(runtime)
+        if intent == "trade_result":
+            return self._trade_result_response(runtime, focus_asset, question)
         if intent == "trade_why":
             return self._trade_why_response(runtime, focus_asset, question)
         if focus_asset:
@@ -2577,6 +2610,77 @@ class RobbieChatService:
             lines.append(f"• {asset} {direction} from {entry} | floating P&L ${pnl:+.2f}")
         return "\n".join(lines)
 
+    @staticmethod
+    def _trade_result_target_label(question: str, trade: Dict[str, Any]) -> str:
+        text = str(question or "")
+        match = re.search(r"\btp\s*([1-9])\b", text, flags=re.IGNORECASE)
+        if match:
+            return f"TP{match.group(1)}"
+        match = re.search(r"\btake\s+profit\s+([1-9])\b", text, flags=re.IGNORECASE)
+        if match:
+            return f"TP{match.group(1)}"
+        reason = str(trade.get("display_exit_reason") or trade.get("exit_reason") or "")
+        match = re.search(r"(?:take profit|tp)\s*([1-9])(?:\s*/\s*([1-9]))?", reason, flags=re.IGNORECASE)
+        if match:
+            if match.group(2):
+                return f"TP{match.group(1)}/{match.group(2)}"
+            return f"TP{match.group(1)}"
+        tp_hit = trade.get("tp_hit")
+        try:
+            if int(tp_hit or 0) > 0:
+                return f"TP{int(tp_hit)}"
+        except Exception:
+            pass
+        return "the profit target"
+
+    def _trade_result_response(self, runtime: Dict[str, Any], focus_asset: str, question: str) -> str:
+        recent = runtime.get("recent_trade") if isinstance(runtime.get("recent_trade"), dict) else {}
+        closed_trades = list(runtime.get("closed_trades") or [])
+        if not recent and closed_trades:
+            recent = dict(closed_trades[0])
+
+        if not recent:
+            if focus_asset:
+                return (
+                    f"I do not see a completed {focus_asset} trade in the closed-trade history snapshot yet. "
+                    "So I should not answer that as a live chart-status question; the close event may not have reached this chat runtime yet."
+                )
+            return "I do not see a completed trade in the closed-trade history snapshot yet."
+
+        asset = str(recent.get("asset") or focus_asset or "that trade")
+        direction = str(recent.get("direction") or recent.get("signal") or "").upper()
+        reason = str(recent.get("display_exit_reason") or recent.get("exit_reason") or "closed").strip()
+        pnl = _coerce_float(recent.get("pnl"), 0.0)
+        rr = _coerce_float(recent.get("risk_reward"), 0.0)
+        entry = _price_text(recent.get("entry_price"))
+        exit_price = _price_text(recent.get("exit_price"))
+        exit_time = _format_display_minutes(recent.get("exit_time"))
+        target_label = self._trade_result_target_label(question, recent)
+        current_trade = runtime.get("current_trade") if isinstance(runtime.get("current_trade"), dict) else {}
+
+        headline = f"Yes — {asset} {direction} is already closed."
+        if target_label:
+            headline += f" It reached {target_label}."
+
+        lines = [
+            headline,
+            f"Close reason: {reason}.",
+            f"Entry {entry} -> exit {exit_price}; realized P&L ${pnl:+.2f}" + (f" ({rr:+.2f}R)." if rr else "."),
+        ]
+        if exit_time:
+            lines.append(f"Closed at {exit_time}.")
+        if not current_trade:
+            lines.append("The bot is flat on that asset now; if another surface still shows it open, that surface is stale.")
+
+        review = self._review_for_trade(recent)
+        summary = str(review.get("summary") or "").strip()
+        lesson = str(review.get("lesson") or "").strip()
+        if summary:
+            lines.append(f"Review: {_clip_text(summary, 220)}")
+        if lesson:
+            lines.append(f"Lesson kept: {_clip_text(lesson, 180)}")
+        return "\n".join(lines)
+
     def _trade_why_response(self, runtime: Dict[str, Any], focus_asset: str, question: str) -> str:
         current_trade = runtime.get("current_trade") if isinstance(runtime.get("current_trade"), dict) else {}
         if current_trade:
@@ -2848,7 +2952,7 @@ class RobbieChatService:
         if ROBBIE_CHAT_MODE == "strict":
             return True
         if ROBBIE_CHAT_MODE == "llm":
-            return intent in {"issues", "positions", "stop_loss", "trade_why"}
+            return intent in {"issues", "positions", "stop_loss", "trade_why", "trade_result"}
         return intent in _RUNTIME_FACT_INTENTS
 
     @staticmethod
@@ -2909,7 +3013,7 @@ class RobbieChatService:
             instructions.append("Stay grounded to runtime facts and general mechanics only; do not answer as if you have broader live awareness.")
         if include_local_draft:
             instructions.append("A local baseline answer may be provided; use it only if it is consistent with the stronger runtime facts and your own reasoning.")
-        if intent in {"stop_loss", "trade_why", "learning", "adjustment", "issues", "positions"}:
+        if intent in {"stop_loss", "trade_why", "trade_result", "learning", "adjustment", "issues", "positions"}:
             instructions.append("For bot-specific questions, lead with runtime facts first, then add inference only if useful.")
         elif intent in {"macro", "forecast", "general", "market"}:
             instructions.append("For broader market questions, synthesize runtime facts with general knowledge and answer conversationally, but do not overclaim certainty.")
@@ -2923,7 +3027,7 @@ class RobbieChatService:
         deterministic: str,
         intent: str,
     ) -> str:
-        if intent in {"calendar", "weekly", "schedule", "logs", "codebase", "runtime_control"}:
+        if intent in {"calendar", "weekly", "schedule", "logs", "codebase", "runtime_control", "trade_result"}:
             return deterministic
         provider = str(ROBBIE_CHAT_PROVIDER or "auto").strip().lower()
         if provider not in {"auto", "deepseek"}:
