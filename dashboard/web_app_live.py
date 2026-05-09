@@ -1183,6 +1183,7 @@ _dashboard_pubsub_started = False
 _command_center_cache_invalidated_at = 0.0
 _dashboard_pubsub_channels = (
     "signals",
+    "positions",
     "SIGNAL_JOURNAL_UPDATE",
     "COMMAND_CENTER_CONTEXT_UPDATE",
     "LIQUIDITY_WALL_DETECTED",
@@ -1214,6 +1215,24 @@ def _invalidate_command_center_related_caches(*, min_interval_seconds: float = 3
     )
 
 
+def _invalidate_position_related_dashboard_caches(*, min_interval_seconds: float = 0.0) -> None:
+    _invalidate_command_center_related_caches(min_interval_seconds=min_interval_seconds)
+    _invalidate_cache_prefixes(
+        _COMMAND_CENTER_PAYLOAD_CACHE_KEY,
+        _COMMAND_CENTER_PAYLOAD_LAST_GOOD_KEY,
+        "db_runtime_snapshot",
+        "live_book:",
+        "risk_portfolio",
+        "status:",
+        "system_status:",
+        "closed_trades:",
+        "trade_history:",
+        "strategy_performance:",
+        "page_overview:command_center:",
+        "page_overview:risk_dashboard:",
+    )
+
+
 def _handle_dashboard_pubsub_message(channel: str, payload: Dict[str, Any]) -> None:
     if channel == "signals":
         asset = str(payload.get("asset") or "")
@@ -1221,6 +1240,9 @@ def _handle_dashboard_pubsub_message(channel: str, payload: Dict[str, Any]) -> N
             _store(asset, payload)
             _last_ref[asset] = time.time()
         _invalidate_command_center_related_caches()
+        return
+    if channel == "positions":
+        _invalidate_position_related_dashboard_caches()
         return
     if channel in {"SIGNAL_JOURNAL_UPDATE", "COMMAND_CENTER_CONTEXT_UPDATE"}:
         _invalidate_command_center_related_caches()
@@ -2888,7 +2910,8 @@ def _normalize_command_center_payload_contract(payload: Dict[str, Any]) -> Dict[
 
     top_opportunities = [row for row in list(payload.get("top_opportunities") or []) if isinstance(row, dict)]
     near_misses = [row for row in list(payload.get("near_misses") or []) if isinstance(row, dict)]
-    positions = [row for row in list(payload.get("positions") or []) if isinstance(row, dict)]
+    positions = _filter_stale_closed_open_positions(payload.get("positions") or [], None)
+    payload["open_positions"] = len(positions)
 
     if not any(ladder.get(key) for key in ("hot", "almost_ready", "blocked", "inactive")):
         ladder = _build_watchlist_ladder(top_opportunities, near_misses, session_radar, positions)
@@ -3116,6 +3139,164 @@ def _load_authoritative_closed_trades(limit: int = 50) -> List[Dict[str, Any]]:
         normalized.append(item)
     _cache_set(cache_key, copy.deepcopy(normalized), ttl=_CLOSED_TRADES_CACHE_TTL)
     return normalized
+
+
+def _dashboard_trade_identifier_values(row: Dict[str, Any]) -> set[str]:
+    if not isinstance(row, dict):
+        return set()
+
+    values: set[str] = set()
+
+    def _add(value: Any) -> None:
+        text = str(value or "").strip()
+        if text:
+            values.add(text)
+
+    for key in (
+        "trade_id",
+        "id",
+        "broker_trade_id",
+        "deal_id",
+        "dealId",
+        "affected_deal_id",
+        "affectedDealId",
+        "broker_close_deal_id",
+        "broker_deal_reference",
+        "deal_reference",
+        "dealReference",
+    ):
+        _add(row.get(key))
+
+    metadata = row.get("metadata") if isinstance(row.get("metadata"), dict) else row.get("trade_metadata")
+    if isinstance(metadata, dict):
+        for key in (
+            "trade_id",
+            "parent_trade_id",
+            "broker_trade_id",
+            "deal_id",
+            "dealId",
+            "affected_deal_id",
+            "affectedDealId",
+            "broker_close_deal_id",
+            "broker_deal_reference",
+            "deal_reference",
+            "dealReference",
+        ):
+            _add(metadata.get(key))
+        for nested_key in ("broker_execution", "broker_close", "paper_execution"):
+            nested = metadata.get(nested_key)
+            if not isinstance(nested, dict):
+                continue
+            for key in (
+                "deal_id",
+                "dealId",
+                "order_id",
+                "affected_deal_id",
+                "affectedDealId",
+                "broker_close_deal_id",
+                "deal_reference",
+                "dealReference",
+            ):
+                _add(nested.get(key))
+
+    return values
+
+
+def _dashboard_trade_identifiers_overlap(left: set[str], right: set[str]) -> bool:
+    if left.intersection(right):
+        return True
+    for a in left:
+        for b in right:
+            if min(len(a), len(b)) < 10 or abs(len(a) - len(b)) != 1:
+                continue
+            if a.startswith(b) or b.startswith(a):
+                return True
+    return False
+
+
+def _filter_stale_closed_open_positions(
+    positions: Any,
+    closed_trades: Optional[Any] = None,
+    *,
+    prune_db: bool = False,
+) -> List[Dict[str, Any]]:
+    open_rows = [dict(row) for row in list(positions or []) if isinstance(row, dict)]
+    if not open_rows:
+        return []
+
+    closed_rows = [dict(row) for row in list(closed_trades or []) if isinstance(row, dict)]
+    if closed_trades is None:
+        closed_rows = _load_authoritative_closed_trades(limit=300)
+    if not closed_rows:
+        return open_rows
+
+    closed_ids: set[str] = set()
+    for row in closed_rows:
+        closed_ids.update(_dashboard_trade_identifier_values(row))
+    if not closed_ids:
+        return open_rows
+
+    filtered: List[Dict[str, Any]] = []
+    stale_trade_ids: List[str] = []
+    for row in open_rows:
+        identifiers = _dashboard_trade_identifier_values(row)
+        if identifiers and _dashboard_trade_identifiers_overlap(identifiers, closed_ids):
+            trade_id = str(row.get("trade_id") or "").strip()
+            stale_trade_ids.append(trade_id or str(next(iter(identifiers))))
+            continue
+        filtered.append(row)
+
+    if stale_trade_ids:
+        logger.warning(
+            f"[dashboard] Suppressed {len(stale_trade_ids)} stale open position(s) already present in closed-trade history: "
+            f"{', '.join(stale_trade_ids[:5])}"
+        )
+        if prune_db:
+            try:
+                from services.db_pool import get_db
+
+                db = get_db()
+                for trade_id in stale_trade_ids:
+                    if trade_id:
+                        db.delete_open_position(trade_id)
+            except Exception as exc:
+                logger.debug(f"[dashboard] stale open-position DB prune skipped: {exc}")
+
+    return filtered
+
+
+def _find_closed_trade_by_dashboard_identifier(trade_id: str, *, limit: int = 300) -> Optional[Dict[str, Any]]:
+    target = str(trade_id or "").strip()
+    if not target:
+        return None
+    for trade in _load_authoritative_closed_trades(limit=limit):
+        identifiers = _dashboard_trade_identifier_values(trade)
+        if _dashboard_trade_identifiers_overlap({target}, identifiers):
+            return dict(trade)
+    return None
+
+
+def _already_closed_dashboard_close_response(trade_id: str) -> Optional[Dict[str, Any]]:
+    closed = _find_closed_trade_by_dashboard_identifier(trade_id)
+    if not closed:
+        return None
+    try:
+        from services.db_pool import get_db
+
+        get_db().delete_open_position(trade_id)
+    except Exception as exc:
+        logger.debug(f"[dashboard] already-closed open-position prune skipped for {trade_id}: {exc}")
+    _invalidate_position_related_dashboard_caches()
+    return {
+        "success": True,
+        "trade_id": trade_id,
+        "already_closed": True,
+        "message": "Position already closed on broker; dashboard snapshot refreshed",
+        "asset": closed.get("asset"),
+        "pnl": closed.get("pnl"),
+        "exit_price": closed.get("exit_price"),
+        **_extract_broker_execution_fields(closed),
+    }
 
 
 def _rollup_closed_trades_for_dashboard(closed_trades: Any, *, limit: int = 1000) -> List[Dict[str, Any]]:
@@ -4075,6 +4256,7 @@ def _load_dashboard_db_runtime_snapshot() -> Tuple[Dict[str, Any], Dict[str, Any
         db = get_db()
         positions = list(db.load_open_positions() or [])
         closed_trades = _load_authoritative_closed_trades(limit=1000)
+        positions = _filter_stale_closed_open_positions(positions, closed_trades, prune_db=True)
         closed_summary = _summarize_closed_trade_history(closed_trades)
         summary = dict(db.get_performance_summary(days=30) or {})
         daily_rows = list(db.get_daily_stats(days=1) or [])
@@ -4152,6 +4334,7 @@ def _command_center_core_snapshot(core: Any) -> Tuple[Dict[str, Any], Dict[str, 
         health.setdefault("is_running", bool(getattr(core, "is_running", False)))
         health.setdefault("engine_ready", bool(getattr(core, "is_ready", False)))
         closed_trades = _load_authoritative_closed_trades(limit=240)
+        positions = _filter_stale_closed_open_positions(positions, closed_trades)
         closed_summary = _summarize_closed_trade_history(closed_trades)
         if int(closed_summary.get("total_trades", 0) or 0) > 0:
             initial_balance = float(perf.get("initial_balance", getattr(_args, "balance", 10000.0)) or getattr(_args, "balance", 10000.0))
@@ -8801,15 +8984,22 @@ def api_close_position():
                 )
             )
             if response.get("success"):
-                _invalidate_cache_prefixes("risk_portfolio", "closed_trades:", "trade_history:", "strategy_performance:", "page_overview:command_center:", "page_overview:risk_dashboard:")
+                _invalidate_position_related_dashboard_caches()
+            elif "trade not found" in str(response.get("error") or "").lower():
+                already_closed = _already_closed_dashboard_close_response(trade_id)
+                if already_closed:
+                    return jsonify(already_closed), 200
             return jsonify(response), _dashboard_close_response_status(response)
         positions = core.state.get_open_positions() if hasattr(getattr(core, "state", None), "get_open_positions") else core.get_positions()
         position = next((pos for pos in list(positions or []) if str(pos.get("trade_id") or "") == str(trade_id)), None)
         broker_fields = _extract_broker_execution_fields(position or {})
         result = core.close_position_manually(trade_id, reason="Dashboard Manual Close")
-        _invalidate_cache_prefixes("risk_portfolio", "closed_trades:", "trade_history:", "strategy_performance:", "page_overview:command_center:", "page_overview:risk_dashboard:")
+        _invalidate_position_related_dashboard_caches()
         if not result:
             if position is None:
+                already_closed = _already_closed_dashboard_close_response(trade_id)
+                if already_closed:
+                    return jsonify(already_closed), 200
                 error = "Trade not found"
             elif str(broker_fields.get("broker") or "").lower() != "paper":
                 error = f"{str(broker_fields.get('broker') or 'broker').upper()} close failed; local position left open"
@@ -8857,7 +9047,7 @@ def api_close_bulk():
                 },
             )
             if response.get("success") or response.get("partial_success"):
-                _invalidate_cache_prefixes("risk_portfolio", "closed_trades:", "trade_history:", "strategy_performance:", "page_overview:command_center:", "page_overview:risk_dashboard:")
+                _invalidate_position_related_dashboard_caches()
             return jsonify(response), _dashboard_close_response_status(response)
         positions = core.state.get_open_positions()
         closed, skipped = [], []
@@ -8896,7 +9086,7 @@ def api_close_bulk():
                     "error": str(exc),
                     **_extract_broker_execution_fields(pos),
                 })
-        _invalidate_cache_prefixes("risk_portfolio", "closed_trades:", "trade_history:", "strategy_performance:", "page_overview:command_center:", "page_overview:risk_dashboard:")
+        _invalidate_position_related_dashboard_caches()
         close_count = len(closed)
         skip_count = len(skipped)
         return jsonify({
@@ -8931,7 +9121,7 @@ def api_reprice_weak_positions():
             limit=limit,
             score_threshold=score_threshold,
         )
-        _invalidate_cache_prefixes("risk_portfolio", "closed_trades:", "trade_history:", "strategy_performance:", "page_overview:command_center:", "page_overview:risk_dashboard:")
+        _invalidate_position_related_dashboard_caches()
         return jsonify({
             "success": True,
             "repriced": len(updates),
@@ -8960,7 +9150,7 @@ def api_reduce_weak_positions():
             limit=limit,
             score_threshold=score_threshold,
         )
-        _invalidate_cache_prefixes("risk_portfolio", "closed_trades:", "trade_history:", "strategy_performance:", "page_overview:command_center:", "page_overview:risk_dashboard:")
+        _invalidate_position_related_dashboard_caches()
         return jsonify({
             "success": True,
             "reduced": sum(1 for item in actions if item.get("success")),
