@@ -29,7 +29,9 @@ telegram_session*
 *.pem
 data/system_state.json
 data/ctrader_live_depth.json
+data/ctrader_tokens.json
 data/dukascopy_live_depth.json
+data/dukascopy_keepalive_state.txt
 data/order_flow_snapshots.json
 data/ig_rest_allowance_holdoff.json
 data/ig_contract_specs.json

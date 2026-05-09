@@ -125,6 +125,8 @@ class CTraderDepthBridge:
         self.store_path.parent.mkdir(parents=True, exist_ok=True)
         self.token_cache_path = Path(os.getenv("CTRADER_LIVE_DEPTH_TOKEN_CACHE_PATH", "data/ctrader_tokens.json"))
         self.token_cache_path.parent.mkdir(parents=True, exist_ok=True)
+        self._cached_access_token = ""
+        self._cached_refresh_token = ""
 
         self.client: Optional[Client] = None
         self.account_id: Optional[int] = None
@@ -151,8 +153,10 @@ class CTraderDepthBridge:
             _stderr("cTrader client credentials are missing. Set CTRADER_LIVE_DEPTH_CLIENT_ID and CTRADER_LIVE_DEPTH_CLIENT_SECRET.")
             return 2
         self._load_cached_tokens()
-        if not self.access_token and self.refresh_token:
-            self._refresh_access_token()
+        if self.refresh_token:
+            refreshed = self._refresh_access_token(self.refresh_token, label="configured")
+            if not refreshed and self._cached_refresh_token and self._cached_refresh_token != self.refresh_token:
+                self._refresh_access_token(self._cached_refresh_token, label="cached")
         if not self.access_token:
             auth = Auth(self.client_id, self.client_secret, self.redirect_uri)
             _stderr("Missing cTrader access token. Generate one via the Open API OAuth flow or Playground.")
@@ -175,34 +179,45 @@ class CTraderDepthBridge:
             payload = json.loads(self.token_cache_path.read_text(encoding="utf-8"))
         except Exception:
             return
+        self._cached_access_token = str(payload.get("access_token") or "").strip()
+        self._cached_refresh_token = str(payload.get("refresh_token") or "").strip()
         if not self.access_token:
-            self.access_token = str(payload.get("access_token") or "").strip()
+            self.access_token = self._cached_access_token
         if not self.refresh_token:
-            self.refresh_token = str(payload.get("refresh_token") or "").strip()
+            self.refresh_token = self._cached_refresh_token
 
     def _persist_tokens(self) -> None:
         payload = {
             "updated_at": _now_iso(),
+            "environment": self.environment,
+            "client_id": self.client_id,
+            "account_hint": self.account_hint,
             "access_token": self.access_token,
             "refresh_token": self.refresh_token,
         }
         self.token_cache_path.write_text(json.dumps(payload, ensure_ascii=True, indent=2), encoding="utf-8")
 
-    def _refresh_access_token(self) -> None:
+    def _refresh_access_token(self, refresh_token: str, *, label: str = "configured") -> bool:
+        token_value = str(refresh_token or "").strip()
+        if not token_value:
+            return False
         try:
             auth = Auth(self.client_id, self.client_secret, self.redirect_uri)
-            response = auth.refreshToken(self.refresh_token)
+            response = auth.refreshToken(token_value)
         except Exception as exc:
-            _stderr(f"Token refresh failed: {exc}")
-            return
+            _stderr(f"Token refresh failed for {label} token: {exc}")
+            return False
         token = str((response or {}).get("accessToken") or "").strip()
-        refresh = str((response or {}).get("refreshToken") or self.refresh_token).strip()
+        refresh = str((response or {}).get("refreshToken") or token_value).strip()
         if token:
             self.access_token = token
         if refresh:
             self.refresh_token = refresh
         if self.access_token:
             self._persist_tokens()
+            _stderr(f"Refreshed cTrader access token from {label} refresh token.")
+            return True
+        return False
 
     def _on_connected(self, client: Client) -> None:
         _stderr(f"Connected to cTrader {self.environment} endpoint.")

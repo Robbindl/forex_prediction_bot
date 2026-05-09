@@ -580,6 +580,10 @@ class CTraderLiveDepthBridge:
             payload["depth_quality_tier"] = str((fallback_depth or {}).get("depth_quality_tier") or "none")
         if (fallback_depth or {}) and float(payload.get("book_imbalance", 0.0) or 0.0) == 0.0:
             payload["book_imbalance"] = round(float((fallback_depth or {}).get("book_imbalance", 0.0) or 0.0), 4)
+        if float(payload.get("bid_vol", 0.0) or 0.0) <= 0.0 and _safe_float(snapshot.get("total_bid_volume"), 0.0) > 0.0:
+            payload["bid_vol"] = _safe_float(snapshot.get("total_bid_volume"), 0.0)
+        if float(payload.get("ask_vol", 0.0) or 0.0) <= 0.0 and _safe_float(snapshot.get("total_ask_volume"), 0.0) > 0.0:
+            payload["ask_vol"] = _safe_float(snapshot.get("total_ask_volume"), 0.0)
         payload["depth_available"] = bool((metrics or {}).get("depth_available")) or bool(top_bids or top_asks)
         payload["synthetic_depth_available"] = bool((metrics or {}).get("synthetic_depth_available"))
         payload["depth_levels"] = int((metrics or {}).get("depth_levels") or max(len(top_bids), len(top_asks)))
