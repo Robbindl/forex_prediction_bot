@@ -354,6 +354,8 @@ class CTraderDepthBridge:
 
     def _on_disconnected(self, _client: Client, reason: Any) -> None:
         _stderr(f"Disconnected from cTrader: {reason}")
+        if reactor.running:
+            reactor.callLater(0.1, reactor.stop)
 
     def _on_message(self, _client: Client, message: Any) -> None:
         # Optional low-level protocol tracing.
