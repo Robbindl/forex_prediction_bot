@@ -4,14 +4,21 @@ import com.dukascopy.api.IAccount;
 import com.dukascopy.api.IBar;
 import com.dukascopy.api.IConsole;
 import com.dukascopy.api.IContext;
+import com.dukascopy.api.IEngine;
 import com.dukascopy.api.IMessage;
+import com.dukascopy.api.IOrder;
 import com.dukascopy.api.IStrategy;
 import com.dukascopy.api.ITick;
 import com.dukascopy.api.Instrument;
 import com.dukascopy.api.JFException;
 import com.dukascopy.api.Period;
 
+import java.io.IOException;
 import java.io.PrintStream;
+import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.nio.file.Paths;
 import java.lang.reflect.Method;
 import java.text.SimpleDateFormat;
 import java.util.ArrayList;
@@ -25,6 +32,38 @@ import java.util.Set;
 import java.util.TimeZone;
 import java.util.concurrent.ConcurrentHashMap;
 
+final class KeepaliveConfig {
+    final boolean enabled;
+    final String symbol;
+    final double amount;
+    final long intervalMillis;
+    final long holdMillis;
+    final Path statePath;
+    final boolean allowLive;
+
+    KeepaliveConfig(
+        boolean enabled,
+        String symbol,
+        double amount,
+        long intervalMillis,
+        long holdMillis,
+        String statePath,
+        boolean allowLive
+    ) {
+        this.enabled = enabled;
+        this.symbol = symbol == null || symbol.trim().isEmpty() ? "EUR/USD" : symbol.trim();
+        this.amount = Math.max(0.000001d, amount);
+        this.intervalMillis = Math.max(24L * 60L * 60L * 1000L, intervalMillis);
+        this.holdMillis = Math.max(2000L, holdMillis);
+        this.statePath = statePath == null || statePath.trim().isEmpty() ? null : Paths.get(statePath.trim());
+        this.allowLive = allowLive;
+    }
+
+    static KeepaliveConfig disabled() {
+        return new KeepaliveConfig(false, "EUR/USD", 0.001d, 7L * 24L * 60L * 60L * 1000L, 15000L, "", false);
+    }
+}
+
 final class DepthRelayStrategy implements IStrategy {
     private static final SimpleDateFormat ISO_UTC = new SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss.SSS'Z'", Locale.US);
 
@@ -36,17 +75,26 @@ final class DepthRelayStrategy implements IStrategy {
     private final String environment;
     private final long minEmitMs;
     private final int maxLevels;
+    private final KeepaliveConfig keepaliveConfig;
     private final Map<Instrument, String> instrumentToAsset = new LinkedHashMap<Instrument, String>();
     private final Map<Instrument, String> instrumentToSymbol = new LinkedHashMap<Instrument, String>();
     private final ConcurrentHashMap<String, Long> lastEmitAt = new ConcurrentHashMap<String, Long>();
     private IContext context;
     private IConsole console;
+    private boolean keepaliveThreadStarted;
 
-    DepthRelayStrategy(Map<String, String> assetSymbols, String environment, long minEmitMs, int maxLevels) {
+    DepthRelayStrategy(
+        Map<String, String> assetSymbols,
+        String environment,
+        long minEmitMs,
+        int maxLevels,
+        KeepaliveConfig keepaliveConfig
+    ) {
         this.assetSymbols = new LinkedHashMap<String, String>(assetSymbols);
         this.environment = environment == null || environment.trim().isEmpty() ? "demo" : environment.trim();
         this.minEmitMs = Math.max(50L, minEmitMs);
         this.maxLevels = Math.max(1, maxLevels);
+        this.keepaliveConfig = keepaliveConfig == null ? KeepaliveConfig.disabled() : keepaliveConfig;
     }
 
     @Override
@@ -65,9 +113,16 @@ final class DepthRelayStrategy implements IStrategy {
             instrumentToSymbol.put(instrument, entry.getValue());
             subscribed.add(instrument);
         }
+        Instrument keepaliveInstrument = keepaliveConfig.enabled ? resolveInstrument(keepaliveConfig.symbol) : null;
+        if (keepaliveConfig.enabled && keepaliveInstrument == null) {
+            log("Keepalive skipped. Unsupported instrument: " + keepaliveConfig.symbol);
+        } else if (keepaliveInstrument != null) {
+            subscribed.add(keepaliveInstrument);
+        }
 
         subscribe(context, subscribed);
         log("Subscribed instruments: " + subscribed);
+        startKeepaliveThreadIfDue(keepaliveInstrument);
     }
 
     @Override
@@ -147,6 +202,115 @@ final class DepthRelayStrategy implements IStrategy {
             withoutFlag.invoke(context, instruments);
         } catch (Exception error) {
             throw new IllegalStateException("Could not subscribe instruments: " + error.getMessage(), error);
+        }
+    }
+
+    private void startKeepaliveThreadIfDue(final Instrument instrument) {
+        if (!keepaliveConfig.enabled || instrument == null || keepaliveThreadStarted) {
+            return;
+        }
+        keepaliveThreadStarted = true;
+        Thread thread = new Thread(new Runnable() {
+            @Override
+            public void run() {
+                runKeepaliveLoop(instrument);
+            }
+        }, "dukascopy-demo-keepalive");
+        thread.setDaemon(true);
+        thread.start();
+    }
+
+    private void runKeepaliveLoop(Instrument instrument) {
+        while (true) {
+            executeKeepalive(instrument);
+            try {
+                Thread.sleep(Math.min(60L * 60L * 1000L, Math.max(60L * 1000L, keepaliveConfig.intervalMillis / 24L)));
+            } catch (InterruptedException exc) {
+                Thread.currentThread().interrupt();
+                return;
+            }
+        }
+    }
+
+    private void executeKeepalive(Instrument instrument) {
+        if ("live".equalsIgnoreCase(environment) && !keepaliveConfig.allowLive) {
+            log("Keepalive skipped. Refusing to trade on live Dukascopy session.");
+            return;
+        }
+        long now = System.currentTimeMillis();
+        long lastRun = readLastKeepaliveAt();
+        if (lastRun > 0L && now - lastRun < keepaliveConfig.intervalMillis) {
+            return;
+        }
+        if (context == null || context.getEngine() == null) {
+            log("Keepalive skipped. JForex engine unavailable.");
+            return;
+        }
+
+        IOrder order = null;
+        boolean submitted = false;
+        try {
+            IEngine engine = context.getEngine();
+            if (!engine.isTradable(instrument)) {
+                log("Keepalive skipped. Instrument is not tradable: " + instrument);
+                return;
+            }
+            double amount = Math.max(keepaliveConfig.amount, instrument.getMinTradeAmount());
+            String label = "rb_keepalive_" + now;
+            order = engine.submitOrder(label, instrument, IEngine.OrderCommand.BUY, amount, 0.0d, 5.0d);
+            submitted = true;
+            log("Keepalive demo trade submitted: " + label + " " + instrument + " amount=" + amount);
+            order.waitForUpdate(30000L, IOrder.State.FILLED, IOrder.State.CLOSED, IOrder.State.CANCELED);
+            if (order.getState() == IOrder.State.CANCELED || order.getState() == IOrder.State.CLOSED) {
+                log("Keepalive order finished before close step. state=" + order.getState());
+                return;
+            }
+            Thread.sleep(keepaliveConfig.holdMillis);
+            order.close();
+            order.waitForUpdate(30000L, IOrder.State.CLOSED);
+            log("Keepalive demo trade closed: " + label + " state=" + order.getState());
+        } catch (Exception exc) {
+            log("Keepalive failed: " + exc.getMessage());
+        } finally {
+            if (submitted) {
+                writeLastKeepaliveAt(System.currentTimeMillis());
+            }
+        }
+    }
+
+    private long readLastKeepaliveAt() {
+        if (keepaliveConfig.statePath == null) {
+            return 0L;
+        }
+        try {
+            if (!Files.exists(keepaliveConfig.statePath)) {
+                return 0L;
+            }
+            String text = new String(Files.readAllBytes(keepaliveConfig.statePath), StandardCharsets.UTF_8).trim();
+            if (text.isEmpty()) {
+                return 0L;
+            }
+            return Long.parseLong(text);
+        } catch (Exception ignored) {
+            return 0L;
+        }
+    }
+
+    private void writeLastKeepaliveAt(long timestampMillis) {
+        if (keepaliveConfig.statePath == null) {
+            return;
+        }
+        try {
+            Path parent = keepaliveConfig.statePath.getParent();
+            if (parent != null) {
+                Files.createDirectories(parent);
+            }
+            Files.write(
+                keepaliveConfig.statePath,
+                String.valueOf(timestampMillis).getBytes(StandardCharsets.UTF_8)
+            );
+        } catch (IOException exc) {
+            log("Keepalive state write failed: " + exc.getMessage());
         }
     }
 

@@ -24,6 +24,15 @@ public final class DepthBridgeMain {
         String assetMapRaw = env("DUKASCOPY_BRIDGE_ASSET_MAP");
         long minEmitMs = parseLong(env("DUKASCOPY_BRIDGE_MIN_EMIT_MS"), 150L, 50L);
         int maxLevels = (int) parseLong(env("DUKASCOPY_BRIDGE_MAX_LEVELS"), 20L, 1L);
+        KeepaliveConfig keepaliveConfig = new KeepaliveConfig(
+            parseBoolean(env("DUKASCOPY_BRIDGE_KEEPALIVE_ENABLED"), false),
+            defaultString(env("DUKASCOPY_BRIDGE_KEEPALIVE_SYMBOL"), "EUR/USD"),
+            parseDouble(env("DUKASCOPY_BRIDGE_KEEPALIVE_AMOUNT"), 0.001d, 0.000001d),
+            TimeUnit.DAYS.toMillis(parseLong(env("DUKASCOPY_BRIDGE_KEEPALIVE_INTERVAL_DAYS"), 7L, 1L)),
+            TimeUnit.SECONDS.toMillis(parseLong(env("DUKASCOPY_BRIDGE_KEEPALIVE_HOLD_SECONDS"), 15L, 2L)),
+            env("DUKASCOPY_BRIDGE_KEEPALIVE_STATE_PATH"),
+            parseBoolean(env("DUKASCOPY_BRIDGE_KEEPALIVE_ALLOW_LIVE"), false)
+        );
 
         if (isBlank(jnlpUrl) || isBlank(username) || isBlank(password)) {
             log("Missing Dukascopy credentials. Set DUKASCOPY_BRIDGE_JNLP_URL, USERNAME, PASSWORD.");
@@ -82,7 +91,8 @@ public final class DepthBridgeMain {
             assetMap,
             environmentFromJnlp(jnlpUrl),
             minEmitMs,
-            maxLevels
+            maxLevels,
+            keepaliveConfig
         );
 
         long processId = client.startStrategy(strategy);
@@ -184,6 +194,35 @@ public final class DepthBridgeMain {
         } catch (NumberFormatException ignored) {
             return fallback;
         }
+    }
+
+    private static double parseDouble(String raw, double fallback, double floor) {
+        if (raw == null || raw.trim().isEmpty()) {
+            return fallback;
+        }
+        try {
+            return Math.max(floor, Double.parseDouble(raw.trim()));
+        } catch (NumberFormatException ignored) {
+            return fallback;
+        }
+    }
+
+    private static boolean parseBoolean(String raw, boolean fallback) {
+        if (raw == null || raw.trim().isEmpty()) {
+            return fallback;
+        }
+        String value = raw.trim().toLowerCase();
+        if ("1".equals(value) || "true".equals(value) || "yes".equals(value) || "on".equals(value)) {
+            return true;
+        }
+        if ("0".equals(value) || "false".equals(value) || "no".equals(value) || "off".equals(value)) {
+            return false;
+        }
+        return fallback;
+    }
+
+    private static String defaultString(String raw, String fallback) {
+        return isBlank(raw) ? fallback : raw.trim();
     }
 
     private static String env(String key) {

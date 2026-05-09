@@ -23,6 +23,23 @@ DUKASCOPY_LIVE_DEPTH_MIN_EMIT_MS=150
 DUKASCOPY_LIVE_DEPTH_MAX_LEVELS=20
 ```
 
+Demo keepalive:
+
+```env
+DUKASCOPY_LIVE_DEPTH_KEEPALIVE_ENABLED=false
+DUKASCOPY_LIVE_DEPTH_KEEPALIVE_SYMBOL=EUR/USD
+DUKASCOPY_LIVE_DEPTH_KEEPALIVE_AMOUNT=0.001
+DUKASCOPY_LIVE_DEPTH_KEEPALIVE_INTERVAL_DAYS=7
+DUKASCOPY_LIVE_DEPTH_KEEPALIVE_HOLD_SECONDS=15
+DUKASCOPY_LIVE_DEPTH_KEEPALIVE_STATE_PATH=data/dukascopy_keepalive_state.txt
+DUKASCOPY_LIVE_DEPTH_KEEPALIVE_ALLOW_LIVE=false
+```
+
+When enabled on the demo JNLP URL, the sidecar submits and closes one tiny
+maintenance trade only when the state file says the interval has elapsed. It is
+separate from bot strategy execution and refuses to run on live sessions unless
+`DUKASCOPY_LIVE_DEPTH_KEEPALIVE_ALLOW_LIVE=true`.
+
 If you prefer to run the sidecar yourself, point the bot at a custom command:
 
 ```env

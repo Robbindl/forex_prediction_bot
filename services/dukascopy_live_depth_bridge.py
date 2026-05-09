@@ -15,6 +15,13 @@ from config.config import (
     DUKASCOPY_LIVE_DEPTH_AUTO_BUILD,
     DUKASCOPY_LIVE_DEPTH_CMD,
     DUKASCOPY_LIVE_DEPTH_ENABLED,
+    DUKASCOPY_LIVE_DEPTH_KEEPALIVE_ALLOW_LIVE,
+    DUKASCOPY_LIVE_DEPTH_KEEPALIVE_AMOUNT,
+    DUKASCOPY_LIVE_DEPTH_KEEPALIVE_ENABLED,
+    DUKASCOPY_LIVE_DEPTH_KEEPALIVE_HOLD_SECONDS,
+    DUKASCOPY_LIVE_DEPTH_KEEPALIVE_INTERVAL_DAYS,
+    DUKASCOPY_LIVE_DEPTH_KEEPALIVE_STATE_PATH,
+    DUKASCOPY_LIVE_DEPTH_KEEPALIVE_SYMBOL,
     DUKASCOPY_LIVE_DEPTH_JAVA_BIN,
     DUKASCOPY_LIVE_DEPTH_JNLP_URL,
     DUKASCOPY_LIVE_DEPTH_MAX_LEVELS,
@@ -165,6 +172,13 @@ class DukascopyLiveDepthBridge:
         auto_build: Optional[bool] = None,
         min_emit_ms: int = DUKASCOPY_LIVE_DEPTH_MIN_EMIT_MS or 150,
         max_levels: int = DUKASCOPY_LIVE_DEPTH_MAX_LEVELS or 20,
+        keepalive_enabled: Optional[bool] = None,
+        keepalive_symbol: str = DUKASCOPY_LIVE_DEPTH_KEEPALIVE_SYMBOL,
+        keepalive_amount: float = DUKASCOPY_LIVE_DEPTH_KEEPALIVE_AMOUNT or 0.001,
+        keepalive_interval_days: int = DUKASCOPY_LIVE_DEPTH_KEEPALIVE_INTERVAL_DAYS or 7,
+        keepalive_hold_seconds: int = DUKASCOPY_LIVE_DEPTH_KEEPALIVE_HOLD_SECONDS or 15,
+        keepalive_state_path: Path | str = DUKASCOPY_LIVE_DEPTH_KEEPALIVE_STATE_PATH,
+        keepalive_allow_live: Optional[bool] = None,
     ) -> None:
         self._enabled = bool(DUKASCOPY_LIVE_DEPTH_ENABLED if enabled is None else enabled)
         self._store_path = _resolve_runtime_path(store_path)
@@ -179,6 +193,17 @@ class DukascopyLiveDepthBridge:
         self._auto_build = bool(DUKASCOPY_LIVE_DEPTH_AUTO_BUILD if auto_build is None else auto_build)
         self._min_emit_ms = max(50, int(min_emit_ms or 150))
         self._max_levels = max(1, int(max_levels or 20))
+        self._keepalive_enabled = bool(
+            DUKASCOPY_LIVE_DEPTH_KEEPALIVE_ENABLED if keepalive_enabled is None else keepalive_enabled
+        )
+        self._keepalive_symbol = str(keepalive_symbol or "EUR/USD").strip() or "EUR/USD"
+        self._keepalive_amount = max(0.000001, float(keepalive_amount or 0.001))
+        self._keepalive_interval_days = max(1, int(keepalive_interval_days or 7))
+        self._keepalive_hold_seconds = max(2, int(keepalive_hold_seconds or 15))
+        self._keepalive_state_path = _resolve_runtime_path(keepalive_state_path)
+        self._keepalive_allow_live = bool(
+            DUKASCOPY_LIVE_DEPTH_KEEPALIVE_ALLOW_LIVE if keepalive_allow_live is None else keepalive_allow_live
+        )
         self._lock = threading.RLock()
         self._latest: Dict[str, Dict[str, Any]] = {}
         self._process: Optional[subprocess.Popen[str]] = None
@@ -236,6 +261,13 @@ class DukascopyLiveDepthBridge:
         )
         env["DUKASCOPY_BRIDGE_MIN_EMIT_MS"] = str(self._min_emit_ms)
         env["DUKASCOPY_BRIDGE_MAX_LEVELS"] = str(self._max_levels)
+        env["DUKASCOPY_BRIDGE_KEEPALIVE_ENABLED"] = "true" if self._keepalive_enabled else "false"
+        env["DUKASCOPY_BRIDGE_KEEPALIVE_SYMBOL"] = self._keepalive_symbol
+        env["DUKASCOPY_BRIDGE_KEEPALIVE_AMOUNT"] = str(self._keepalive_amount)
+        env["DUKASCOPY_BRIDGE_KEEPALIVE_INTERVAL_DAYS"] = str(self._keepalive_interval_days)
+        env["DUKASCOPY_BRIDGE_KEEPALIVE_HOLD_SECONDS"] = str(self._keepalive_hold_seconds)
+        env["DUKASCOPY_BRIDGE_KEEPALIVE_STATE_PATH"] = str(self._keepalive_state_path)
+        env["DUKASCOPY_BRIDGE_KEEPALIVE_ALLOW_LIVE"] = "true" if self._keepalive_allow_live else "false"
         return env
 
     def _ensure_sidecar_built(self) -> Optional[Path]:
@@ -626,6 +658,10 @@ class DukascopyLiveDepthBridge:
             payload["depth_quality_tier"] = str((fallback_depth or {}).get("depth_quality_tier") or "none")
         if (fallback_depth or {}) and float(payload.get("book_imbalance", 0.0) or 0.0) == 0.0:
             payload["book_imbalance"] = round(float((fallback_depth or {}).get("book_imbalance", 0.0) or 0.0), 4)
+        if float(payload.get("bid_vol", 0.0) or 0.0) <= 0.0 and _safe_float(snapshot.get("total_bid_volume"), 0.0) > 0.0:
+            payload["bid_vol"] = _safe_float(snapshot.get("total_bid_volume"), 0.0)
+        if float(payload.get("ask_vol", 0.0) or 0.0) <= 0.0 and _safe_float(snapshot.get("total_ask_volume"), 0.0) > 0.0:
+            payload["ask_vol"] = _safe_float(snapshot.get("total_ask_volume"), 0.0)
         payload["depth_available"] = bool((metrics or {}).get("depth_available")) or bool(top_bids or top_asks)
         payload["synthetic_depth_available"] = bool((metrics or {}).get("synthetic_depth_available"))
         payload["depth_levels"] = int((metrics or {}).get("depth_levels") or max(len(top_bids), len(top_asks)))
@@ -711,6 +747,12 @@ class DukascopyLiveDepthBridge:
             "healthy": healthy,
             "state": state,
             "restart_count": self._restart_count,
+            "keepalive_enabled": self._keepalive_enabled,
+            "keepalive_symbol": self._keepalive_symbol,
+            "keepalive_interval_days": self._keepalive_interval_days,
+            "keepalive_hold_seconds": self._keepalive_hold_seconds,
+            "keepalive_state_path": str(self._keepalive_state_path),
+            "keepalive_allow_live": self._keepalive_allow_live,
         }
 
     def ensure_running(self, *, max_snapshot_age: float = _DEFAULT_STALE_SECONDS) -> Dict[str, Any]:
