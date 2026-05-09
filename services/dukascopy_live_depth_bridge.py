@@ -112,6 +112,22 @@ def _normalize_asset_list(raw: str) -> tuple[str, ...]:
     return tuple(assets)
 
 
+def _sidecar_sources_newer_than(jar_path: Path) -> bool:
+    try:
+        jar_mtime = jar_path.stat().st_mtime
+    except Exception:
+        return True
+    candidates = [_SIDEcar_PROJECT_DIR / "pom.xml"]
+    candidates.extend((_SIDEcar_PROJECT_DIR / "src").rglob("*.java"))
+    for source in candidates:
+        try:
+            if source.exists() and source.stat().st_mtime > jar_mtime:
+                return True
+        except Exception:
+            continue
+    return False
+
+
 def _market_session_state(assets: List[str]) -> Dict[str, Any]:
     open_assets: List[str] = []
     closed_assets: List[Dict[str, str]] = []
@@ -271,19 +287,27 @@ class DukascopyLiveDepthBridge:
         return env
 
     def _ensure_sidecar_built(self) -> Optional[Path]:
-        if _SIDECAR_JAR.exists():
+        existing_jar = _SIDECAR_JAR.resolve() if _SIDECAR_JAR.exists() else None
+        if existing_jar is not None and not _sidecar_sources_newer_than(existing_jar):
             return _SIDECAR_JAR.resolve()
         if not self._auto_build:
+            if existing_jar is not None:
+                logger.warning(f"[DukascopyDepth] sidecar jar is older than source but auto-build is disabled: {_SIDECAR_JAR}")
+                return existing_jar
             logger.warning(f"[DukascopyDepth] sidecar jar missing at {_SIDECAR_JAR}")
             return None
 
         mvn = shutil.which("mvn.cmd" if os.name == "nt" else "mvn") or shutil.which("mvn")
         if not mvn:
+            if existing_jar is not None:
+                logger.warning("[DukascopyDepth] Maven not found — using existing stale sidecar jar")
+                return existing_jar
             logger.warning("[DukascopyDepth] Maven not found — cannot build Java sidecar")
             return None
 
         try:
-            logger.info("[DukascopyDepth] building Java sidecar with Maven...")
+            reason = "stale Java sources" if existing_jar is not None else "missing jar"
+            logger.info(f"[DukascopyDepth] building Java sidecar with Maven ({reason})...")
             proc = subprocess.run(
                 [mvn, "-q", "-DskipTests", "package"],
                 cwd=str(_SIDEcar_PROJECT_DIR),
