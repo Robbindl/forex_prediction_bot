@@ -127,6 +127,8 @@ class CTraderDepthBridge:
         self.token_cache_path.parent.mkdir(parents=True, exist_ok=True)
         self._cached_access_token = ""
         self._cached_refresh_token = ""
+        self._account_list_retry_used = False
+        self._active_token_source = "configured access token" if self.access_token else ""
 
         self.client: Optional[Client] = None
         self.account_id: Optional[int] = None
@@ -183,6 +185,8 @@ class CTraderDepthBridge:
         self._cached_refresh_token = str(payload.get("refresh_token") or "").strip()
         if not self.access_token:
             self.access_token = self._cached_access_token
+            if self.access_token:
+                self._active_token_source = "cached access token"
         if not self.refresh_token:
             self.refresh_token = self._cached_refresh_token
 
@@ -215,6 +219,7 @@ class CTraderDepthBridge:
             self.refresh_token = refresh
         if self.access_token:
             self._persist_tokens()
+            self._active_token_source = f"{label} refresh token"
             _stderr(f"Refreshed cTrader access token from {label} refresh token.")
             return True
         return False
@@ -225,9 +230,32 @@ class CTraderDepthBridge:
         client.send(req).addCallbacks(self._after_app_auth, self._fatal)
 
     def _after_app_auth(self, _response: Any) -> None:
+        self._request_account_list()
+
+    def _request_account_list(self) -> None:
         assert self.client is not None
         req = ProtoOAGetAccountListByAccessTokenReq(accessToken=self.access_token)
         self.client.send(req).addCallbacks(self._after_account_list, self._fatal)
+
+    def _retry_account_list_with_cached_token(self) -> bool:
+        if self._account_list_retry_used:
+            return False
+        self._account_list_retry_used = True
+
+        if self._cached_refresh_token and self._cached_refresh_token != self.refresh_token:
+            if self._refresh_access_token(self._cached_refresh_token, label="cached-after-empty-account-list"):
+                _stderr("Retrying cTrader account list with cached refresh token after empty account response.")
+                self._request_account_list()
+                return True
+
+        if self._cached_access_token and self._cached_access_token != self.access_token:
+            self.access_token = self._cached_access_token
+            self._active_token_source = "cached access token"
+            _stderr("Retrying cTrader account list with cached access token after empty account response.")
+            self._request_account_list()
+            return True
+
+        return False
 
     def _after_account_list(self, response: Any) -> None:
         # Optional debug tracing for account discovery.
@@ -252,7 +280,15 @@ class CTraderDepthBridge:
 
         _debug(f"Found {len(accounts)} accounts")
         if not accounts:
-            self._fatal(RuntimeError("No cTrader accounts were returned for the access token."))
+            if self._retry_account_list_with_cached_token():
+                return
+            source = self._active_token_source or "configured access token"
+            account_hint = self.account_hint or "unset"
+            self._fatal(RuntimeError(
+                "No cTrader accounts were returned for the access token. "
+                f"Token source={source}; environment={self.environment}; account_hint={account_hint}. "
+                "Regenerate the cTrader Open API token for this broker account and environment."
+            ))
             return
 
         selected = None
