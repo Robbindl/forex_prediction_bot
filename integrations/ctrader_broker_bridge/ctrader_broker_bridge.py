@@ -13,6 +13,7 @@ from ctrader_open_api.endpoints import EndPoints
 from ctrader_open_api.messages.OpenApiMessages_pb2 import (
     ProtoOAAccountAuthReq,
     ProtoOAApplicationAuthReq,
+    ProtoOAApplicationAuthRes,
     ProtoOAAssetListReq,
     ProtoOAAssetListRes,
     ProtoOAErrorRes,
@@ -60,7 +61,7 @@ SUPPORTED_ASSETS: Dict[str, Dict[str, Any]] = {
     "XRP-USD": {"category": "crypto", "aliases": ("XRPUSD", "XRP/USD", "RIPPLE")},
     "XAU/USD": {"category": "commodities", "aliases": ("XAUUSD", "GOLD", "XAU/USD")},
     "XAG/USD": {"category": "commodities", "aliases": ("XAGUSD", "SILVER", "XAG/USD")},
-    "WTI": {"category": "commodities", "aliases": ("USOIL", "WTI", "CRUDE", "USCRUDE")},
+    "WTI": {"category": "commodities", "aliases": ("USOIL", "WTI", "CRUDE", "USCRUDE", "SPOTCRUDE", "WTI Cash (or Spot) Contract")},
     "US30": {"category": "indices", "aliases": ("US30", "DJ30", "WALLSTREET30")},
     "US100": {"category": "indices", "aliases": ("US100", "USTEC", "NAS100", "NASDAQ100")},
     "US500": {"category": "indices", "aliases": ("US500", "SPX500", "SP500")},
@@ -248,9 +249,20 @@ class CTraderOneShot:
     def _parse(self, response: Any, cls: Type[Any]) -> Any:
         if isinstance(response, cls):
             return response
+        payload_type = int(getattr(response, "payloadType", 0) or 0)
         parsed = cls()
         payload = getattr(response, "payload", None)
         if payload:
+            expected_type = int(getattr(parsed, "payloadType", 0) or 0)
+            error_type = int(ProtoOAErrorRes().payloadType)
+            if payload_type == error_type:
+                error = ProtoOAErrorRes()
+                error.ParseFromString(payload)
+                code = str(getattr(error, "errorCode", "") or "ctrader_error")
+                description = str(getattr(error, "description", "") or code)
+                raise RuntimeError(f"{code}: {description}")
+            if expected_type and payload_type and payload_type != expected_type:
+                raise RuntimeError(f"unexpected cTrader payload type {payload_type}; expected {expected_type}")
             parsed.ParseFromString(payload)
             return parsed
         return response
@@ -260,13 +272,40 @@ class CTraderOneShot:
         client.send(req).addCallbacks(self._after_app_auth, self._fatal)
 
     def _after_app_auth(self, _response: Any) -> None:
+        try:
+            self._parse(_response, ProtoOAApplicationAuthRes)
+        except Exception as exc:
+            self._finish(False, str(exc))
+            return
         assert self.client is not None
         req = ProtoOAGetAccountListByAccessTokenReq(accessToken=self.access_token)
         self.client.send(req).addCallbacks(self._after_account_list, self._fatal)
 
     def _after_account_list(self, response: Any) -> None:
-        parsed = self._parse(response, ProtoOAGetAccountListByAccessTokenRes)
-        accounts = list(getattr(parsed, "ctidTraderAccount", []) or [])
+        try:
+            parsed = self._parse(response, ProtoOAGetAccountListByAccessTokenRes)
+            accounts = list(getattr(parsed, "ctidTraderAccount", []) or [])
+        except Exception as exc:
+            message = str(exc)
+            if ":" in message and "wire type" not in message.lower() and "end-group" not in message.lower():
+                self._finish(False, message)
+                return
+            if self.account_hint:
+                try:
+                    self.account_id = int(float(self.account_hint))
+                except Exception:
+                    self._finish(False, f"cTrader account list parse failed and account hint is not numeric: {exc}")
+                    return
+                _stderr(
+                    "cTrader account list parse failed; continuing with configured "
+                    f"account hint {self.account_id}: {exc}"
+                )
+                assert self.client is not None
+                req = ProtoOAAccountAuthReq(ctidTraderAccountId=self.account_id, accessToken=self.access_token)
+                self.client.send(req).addCallbacks(self._after_account_auth, self._fatal)
+                return
+            self._finish(False, f"cTrader account list parse failed and no account hint is configured: {exc}")
+            return
         if not accounts:
             self._finish(False, "No cTrader accounts were returned for the execution token")
             return
@@ -291,15 +330,25 @@ class CTraderOneShot:
 
     def _after_account_auth(self, _response: Any) -> None:
         assert self.client is not None and self.account_id is not None
+        if self.action == "balance":
+            self._send_balance()
+            return
+        if self.action == "list_positions":
+            self._send_reconcile()
+            return
         self.client.send(ProtoOAAssetListReq(ctidTraderAccountId=self.account_id)).addCallbacks(self._after_assets, self._fatal)
 
     def _after_assets(self, response: Any) -> None:
-        parsed = self._parse(response, ProtoOAAssetListRes)
-        self.assets_by_id = {
-            int(getattr(item, "assetId", 0) or 0): str(getattr(item, "name", "") or getattr(item, "displayName", "") or "").upper()
-            for item in list(getattr(parsed, "asset", []) or [])
-            if int(getattr(item, "assetId", 0) or 0)
-        }
+        try:
+            parsed = self._parse(response, ProtoOAAssetListRes)
+            self.assets_by_id = {
+                int(getattr(item, "assetId", 0) or 0): str(getattr(item, "name", "") or getattr(item, "displayName", "") or "").upper()
+                for item in list(getattr(parsed, "asset", []) or [])
+                if int(getattr(item, "assetId", 0) or 0)
+            }
+        except Exception as exc:
+            self.assets_by_id = {}
+            _stderr(f"cTrader asset list parse failed; continuing without asset names: {exc}")
         assert self.client is not None and self.account_id is not None
         req = ProtoOASymbolsListReq(ctidTraderAccountId=self.account_id, includeArchivedSymbols=False)
         self.client.send(req).addCallbacks(self._after_symbols, self._fatal)
@@ -312,6 +361,8 @@ class CTraderOneShot:
             self._send_balance()
         elif self.action == "list_positions":
             self._send_reconcile()
+        elif self.action == "preflight":
+            self._send_preflight()
         elif self.action == "place_order":
             self._send_place_order()
         elif self.action in {"close_position", "partial_close"}:
@@ -351,6 +402,65 @@ class CTraderOneShot:
             if key and key in self.symbol_lookup:
                 return self.symbol_lookup[key]
         raise RuntimeError(f"cTrader symbol not found for {asset or symbol}")
+
+    def _send_preflight(self) -> None:
+        requested = self.payload.get("assets")
+        if isinstance(requested, str):
+            assets = [item.strip() for item in requested.replace(";", ",").split(",") if item.strip()]
+        elif isinstance(requested, list):
+            assets = [str(item).strip() for item in requested if str(item).strip()]
+        else:
+            assets = list(SUPPORTED_ASSETS)
+
+        resolved: Dict[str, Dict[str, Any]] = {}
+        missing: Dict[str, Any] = {}
+        for asset in assets:
+            try:
+                symbol_id, symbol_name = self._resolve_symbol(asset)
+                resolved[str(asset)] = {"symbol_id": symbol_id, "symbol_name": symbol_name}
+            except Exception as exc:
+                missing[str(asset)] = {"error": str(exc), "suggestions": self._suggest_symbols(asset)}
+
+        benchmark: Dict[str, Any] = {}
+        if self._pepperstone_gold_parity_enabled():
+            try:
+                symbol_id, symbol_name = self._resolve_symbol("XAU/USD", "XAUUSD")
+                benchmark = {"asset": "XAU/USD", "symbol_id": symbol_id, "symbol_name": symbol_name}
+            except Exception as exc:
+                missing["XAU/USD benchmark"] = {"error": str(exc), "suggestions": self._suggest_symbols("XAU/USD")}
+
+        self._finish(
+            not missing,
+            "preflight passed" if not missing else "preflight failed",
+            account_id=str(self.account_id or ""),
+            environment=self.environment,
+            broker_name=os.getenv("CTRADER_EXECUTION_BROKER_NAME", "pepperstone"),
+            symbol_count=len(self.symbols),
+            resolved=resolved,
+            missing=missing,
+            pepperstone_gold_parity_enabled=self._pepperstone_gold_parity_enabled(),
+            benchmark=benchmark,
+        )
+
+    def _suggest_symbols(self, asset: Any) -> List[Dict[str, Any]]:
+        canonical = str(asset or "").strip().upper()
+        meta = SUPPORTED_ASSETS.get(canonical, {})
+        terms = {_normalize_name(canonical)}
+        terms.update(_normalize_name(alias) for alias in meta.get("aliases", ()))
+        if canonical == "WTI":
+            terms.update({"OIL", "CRUDE", "USOIL", "XTI", "XTIUSD", "CL"})
+        terms = {term for term in terms if term}
+        suggestions: List[Dict[str, Any]] = []
+        for item in self.symbols:
+            symbol_id = int(getattr(item, "symbolId", 0) or 0)
+            raw_name = str(getattr(item, "symbolName", "") or "")
+            description = str(getattr(item, "description", "") or "")
+            haystack = f"{_normalize_name(raw_name)} {_normalize_name(description)}"
+            if any(term in haystack for term in terms):
+                suggestions.append({"symbol_id": symbol_id, "symbol_name": raw_name, "description": description})
+            if len(suggestions) >= 25:
+                break
+        return suggestions
 
     def _pepperstone_gold_parity_enabled(self) -> bool:
         if self.environment not in {"demo", "live"}:

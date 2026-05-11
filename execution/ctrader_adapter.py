@@ -49,7 +49,7 @@ _SUPPORTED_ASSETS: Dict[str, Dict[str, Any]] = {
     "XRP-USD": {"category": "crypto", "aliases": ("XRPUSD", "XRP/USD", "RIPPLE")},
     "XAU/USD": {"category": "commodities", "aliases": ("XAUUSD", "GOLD")},
     "XAG/USD": {"category": "commodities", "aliases": ("XAGUSD", "SILVER")},
-    "WTI": {"category": "commodities", "aliases": ("USOIL", "WTI", "CRUDE", "USCRUDE")},
+    "WTI": {"category": "commodities", "aliases": ("USOIL", "WTI", "CRUDE", "USCRUDE", "SPOTCRUDE", "WTI Cash (or Spot) Contract")},
     "US30": {"category": "indices", "aliases": ("US30", "DJ30", "WALLSTREET30")},
     "US100": {"category": "indices", "aliases": ("US100", "USTEC", "NAS100", "NASDAQ100")},
     "US500": {"category": "indices", "aliases": ("US500", "SPX500", "SP500")},
