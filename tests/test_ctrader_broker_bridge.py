@@ -25,6 +25,22 @@ def test_order_price_precision_uses_ctrader_symbol_digits() -> None:
     assert precision["take_profit_changed"] is True
 
 
+def test_market_order_sltp_uses_relative_distances_not_absolute_prices() -> None:
+    fields, meta = CTraderOneShot._market_order_relative_sltp_kwargs(
+        entry_price=2.50000,
+        stop_loss=2.45000,
+        take_profit=2.65000,
+    )
+
+    assert fields == {
+        "relativeStopLoss": 5000,
+        "relativeTakeProfit": 15000,
+    }
+    assert "stopLoss" not in fields
+    assert "takeProfit" not in fields
+    assert meta["unit"] == "1/100000_price"
+
+
 def test_crypto_max_lots_defaults_to_tiny_cap(monkeypatch) -> None:
     monkeypatch.delenv("PEPPERSTONE_CTRADER_MAX_LOTS_CRYPTO", raising=False)
     monkeypatch.delenv("PEPPERSTONE_CTRADER_LIVE_MAX_LOTS_CRYPTO", raising=False)

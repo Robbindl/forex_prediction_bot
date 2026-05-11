@@ -717,6 +717,30 @@ class CTraderOneShot:
         return precision
 
     @staticmethod
+    def _market_order_relative_sltp_kwargs(entry_price: Any, stop_loss: Any, take_profit: Any) -> Tuple[Dict[str, int], Dict[str, Any]]:
+        entry = _safe_float(entry_price, 0.0)
+        sl = _safe_float(stop_loss, 0.0)
+        tp = _safe_float(take_profit, 0.0)
+        fields: Dict[str, int] = {}
+        distances: Dict[str, Any] = {
+            "entry_price": entry,
+            "stop_loss": sl,
+            "take_profit": tp,
+            "unit": "1/100000_price",
+        }
+        if entry <= 0.0:
+            return fields, distances
+        if sl > 0.0:
+            relative_sl = max(1, int(round(abs(entry - sl) * 100000.0)))
+            fields["relativeStopLoss"] = relative_sl
+            distances["relative_stop_loss"] = relative_sl
+        if tp > 0.0:
+            relative_tp = max(1, int(round(abs(tp - entry) * 100000.0)))
+            fields["relativeTakeProfit"] = relative_tp
+            distances["relative_take_profit"] = relative_tp
+        return fields, distances
+
+    @staticmethod
     def _symbol_volume_to_lots(symbol: Any, volume: int) -> float:
         lot_size = CTraderOneShot._symbol_lot_size_cents(symbol)
         if lot_size <= 0:
@@ -1156,19 +1180,21 @@ class CTraderOneShot:
             "label": "forex_prediction_bot",
             "comment": str(self.payload.get("reason") or "bot execution")[:120],
         }
+        entry_price = _safe_float(self.payload.get("entry_price"), 0.0)
         stop_loss = _safe_float(self.payload.get("stop_loss"), 0.0)
         take_profit = _safe_float(self.payload.get("take_profit"), 0.0)
         if symbol_spec is not None:
             price_precision = self._order_price_precision(symbol_spec, price_factor=price_factor, price_conversion=price_conversion)
+            entry_price = float(price_precision.get("entry_price") or 0.0)
             stop_loss = float(price_precision.get("stop_loss") or 0.0)
             take_profit = float(price_precision.get("take_profit") or 0.0)
             self._last_order_broker_sizing["price_precision"] = price_precision
             if price_conversion:
                 self._last_order_broker_sizing["price_conversion"] = dict(price_conversion)
-        if stop_loss > 0:
-            req_kwargs["stopLoss"] = stop_loss
-        if take_profit > 0:
-            req_kwargs["takeProfit"] = take_profit
+        sltp_kwargs, sltp_distances = self._market_order_relative_sltp_kwargs(entry_price, stop_loss, take_profit)
+        req_kwargs.update(sltp_kwargs)
+        if sltp_kwargs:
+            self._last_order_broker_sizing["market_order_sltp"] = sltp_distances
         self._mark_stage("order_submitted")
         self._order_request_sent = True
         self.client.send(ProtoOANewOrderReq(**req_kwargs)).addCallbacks(
