@@ -259,6 +259,7 @@ class ExchangeRouter:
                 "broker_temporarily_unavailable",
                 "exceeded-api-key-allowance",
                 "ig_confirm_pending",
+                "ctrader_execution_unknown",
             )
         )
 

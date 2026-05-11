@@ -207,14 +207,23 @@ class CTraderAdapter(ExchangeAdapter):
         env = os.environ.copy()
         for key, value in self._profile_config().items():
             env[f"CTRADER_EXECUTION_{key}"] = str(value or "")
-        proc = subprocess.run(
-            [sys.executable, str(self._script), action],
-            input=json.dumps(payload, ensure_ascii=True, default=str),
-            text=True,
-            capture_output=True,
-            timeout=self._bridge_timeout,
-            env=env,
-        )
+        if not str(env.get("CTRADER_EXECUTION_BRIDGE_TIMEOUT_SECONDS") or "").strip():
+            env["CTRADER_EXECUTION_BRIDGE_TIMEOUT_SECONDS"] = str(max(20.0, self._bridge_timeout - 5.0))
+        try:
+            proc = subprocess.run(
+                [sys.executable, str(self._script), action],
+                input=json.dumps(payload, ensure_ascii=True, default=str),
+                text=True,
+                capture_output=True,
+                timeout=self._bridge_timeout,
+                env=env,
+            )
+        except subprocess.TimeoutExpired:
+            return {
+                "success": False,
+                "error": f"cTrader execution adapter timed out after {self._bridge_timeout:.0f}s",
+                "action": action,
+            }
         stdout = str(proc.stdout or "").strip().splitlines()
         stderr = str(proc.stderr or "").strip()
         parsed: Dict[str, Any] = {}

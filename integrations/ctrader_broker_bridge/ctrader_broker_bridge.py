@@ -163,13 +163,20 @@ class CTraderOneShot:
         self._pending_conversion_by_symbol_id: Dict[int, str] = {}
         self._last_order_broker_sizing: Optional[Dict[str, Any]] = None
         self._finished = False
+        self._stage = "init"
+        self._order_request_sent = False
+
+    def _mark_stage(self, stage: str) -> None:
+        self._stage = str(stage or "").strip() or self._stage
 
     def run(self) -> int:
         if not self.client_id or not self.client_secret:
             self._finish(False, "cTrader execution credentials missing: set CTRADER_EXECUTION_CLIENT_ID and CTRADER_EXECUTION_CLIENT_SECRET")
             return 2
+        self._mark_stage("load_tokens")
         self._load_cached_tokens()
         if not self.access_token and self.refresh_token:
+            self._mark_stage("refresh_access_token")
             self._refresh_access_token()
         if not self.access_token:
             auth = Auth(self.client_id, self.client_secret, self.redirect_uri)
@@ -179,6 +186,7 @@ class CTraderOneShot:
                 auth_url=auth.getAuthUri(scope="trading"),
             )
             return 2
+        self._mark_stage("connect")
         host = EndPoints.PROTOBUF_DEMO_HOST if self.environment == "demo" else EndPoints.PROTOBUF_LIVE_HOST
         self.client = Client(host, EndPoints.PROTOBUF_PORT, TcpProtocol)
         self.client.setConnectedCallback(self._on_connected)
@@ -229,6 +237,7 @@ class CTraderOneShot:
         payload = {"success": bool(success), "action": self.action}
         if message:
             payload["message" if success else "error"] = message
+        payload.setdefault("stage", self._stage)
         payload.update(extra)
         _stdout(payload)
         try:
@@ -244,7 +253,13 @@ class CTraderOneShot:
 
     def _timeout(self) -> None:
         if not self._finished:
-            self._finish(False, "cTrader execution bridge timed out")
+            if self._order_request_sent:
+                self._finish(
+                    False,
+                    f"ctrader_execution_unknown: cTrader execution bridge timed out at stage={self._stage} after an order request was sent; check broker before retrying",
+                )
+            else:
+                self._finish(False, f"cTrader execution bridge timed out at stage={self._stage}")
 
     def _parse(self, response: Any, cls: Type[Any]) -> Any:
         if isinstance(response, cls):
@@ -268,20 +283,24 @@ class CTraderOneShot:
         return response
 
     def _on_connected(self, client: Client) -> None:
+        self._mark_stage("application_auth")
         req = ProtoOAApplicationAuthReq(clientId=self.client_id, clientSecret=self.client_secret)
         client.send(req).addCallbacks(self._after_app_auth, self._fatal)
 
     def _after_app_auth(self, _response: Any) -> None:
+        self._mark_stage("application_auth_response")
         try:
             self._parse(_response, ProtoOAApplicationAuthRes)
         except Exception as exc:
             self._finish(False, str(exc))
             return
         assert self.client is not None
+        self._mark_stage("account_list")
         req = ProtoOAGetAccountListByAccessTokenReq(accessToken=self.access_token)
         self.client.send(req).addCallbacks(self._after_account_list, self._fatal)
 
     def _after_account_list(self, response: Any) -> None:
+        self._mark_stage("account_list_response")
         try:
             parsed = self._parse(response, ProtoOAGetAccountListByAccessTokenRes)
             accounts = list(getattr(parsed, "ctidTraderAccount", []) or [])
@@ -301,6 +320,7 @@ class CTraderOneShot:
                     f"account hint {self.account_id}: {exc}"
                 )
                 assert self.client is not None
+                self._mark_stage("account_auth")
                 req = ProtoOAAccountAuthReq(ctidTraderAccountId=self.account_id, accessToken=self.access_token)
                 self.client.send(req).addCallbacks(self._after_account_auth, self._fatal)
                 return
@@ -325,10 +345,12 @@ class CTraderOneShot:
             selected = accounts[0]
         self.account_id = int(getattr(selected, "ctidTraderAccountId"))
         assert self.client is not None
+        self._mark_stage("account_auth")
         req = ProtoOAAccountAuthReq(ctidTraderAccountId=self.account_id, accessToken=self.access_token)
         self.client.send(req).addCallbacks(self._after_account_auth, self._fatal)
 
     def _after_account_auth(self, _response: Any) -> None:
+        self._mark_stage("account_auth_response")
         assert self.client is not None and self.account_id is not None
         if self.action == "balance":
             self._send_balance()
@@ -336,9 +358,11 @@ class CTraderOneShot:
         if self.action == "list_positions":
             self._send_reconcile()
             return
+        self._mark_stage("asset_list")
         self.client.send(ProtoOAAssetListReq(ctidTraderAccountId=self.account_id)).addCallbacks(self._after_assets, self._fatal)
 
     def _after_assets(self, response: Any) -> None:
+        self._mark_stage("asset_list_response")
         try:
             parsed = self._parse(response, ProtoOAAssetListRes)
             self.assets_by_id = {
@@ -350,10 +374,12 @@ class CTraderOneShot:
             self.assets_by_id = {}
             _stderr(f"cTrader asset list parse failed; continuing without asset names: {exc}")
         assert self.client is not None and self.account_id is not None
+        self._mark_stage("symbols_list")
         req = ProtoOASymbolsListReq(ctidTraderAccountId=self.account_id, includeArchivedSymbols=False)
         self.client.send(req).addCallbacks(self._after_symbols, self._fatal)
 
     def _after_symbols(self, response: Any) -> None:
+        self._mark_stage("symbols_list_response")
         parsed = self._parse(response, ProtoOASymbolsListRes)
         self.symbols = list(getattr(parsed, "symbol", []) or [])
         self._build_symbol_lookup()
@@ -568,6 +594,7 @@ class CTraderOneShot:
 
     def _request_symbol_detail(self, label: str, symbol_id: int) -> None:
         assert self.client is not None and self.account_id is not None
+        self._mark_stage(f"symbol_detail:{label}")
         self.client.send(ProtoOASymbolByIdReq(ctidTraderAccountId=self.account_id, symbolId=[int(symbol_id)])).addCallbacks(
             lambda response: self._after_symbol_detail(response, label=label, symbol_id=symbol_id),
             self._fatal,
@@ -631,6 +658,7 @@ class CTraderOneShot:
             int(meta["symbol_id"]): quote for quote, meta in self._pending_conversions.items()
         }
         assert self.client is not None and self.account_id is not None
+        self._mark_stage("conversion_spot_subscribe")
         self.client.send(
             ProtoOASubscribeSpotsReq(
                 ctidTraderAccountId=self.account_id,
@@ -709,9 +737,11 @@ class CTraderOneShot:
 
     def _send_balance(self) -> None:
         assert self.client is not None and self.account_id is not None
+        self._mark_stage("balance_request")
         self.client.send(ProtoOATraderReq(ctidTraderAccountId=self.account_id)).addCallbacks(self._after_balance, self._fatal)
 
     def _after_balance(self, response: Any) -> None:
+        self._mark_stage("balance_response")
         parsed = self._parse(response, ProtoOATraderRes)
         trader = getattr(parsed, "trader", None)
         money_digits = int(getattr(trader, "moneyDigits", 2) or 2)
@@ -729,15 +759,18 @@ class CTraderOneShot:
 
     def _send_reconcile(self) -> None:
         assert self.client is not None and self.account_id is not None
+        self._mark_stage("reconcile_request")
         self.client.send(ProtoOAReconcileReq(ctidTraderAccountId=self.account_id)).addCallbacks(self._after_reconcile, self._fatal)
 
     def _after_reconcile(self, response: Any) -> None:
+        self._mark_stage("reconcile_response")
         parsed = self._parse(response, ProtoOAReconcileRes)
         positions = [_message_to_dict(item) for item in list(getattr(parsed, "position", []) or [])]
         self._finish(True, "positions fetched", positions=positions, account_id=str(self.account_id or ""), environment=self.environment)
 
     def _send_place_order(self) -> None:
         assert self.client is not None and self.account_id is not None
+        self._mark_stage("place_order_prepare")
         asset = self.payload.get("asset") or self.payload.get("symbol") or ""
         symbol_id, symbol_name = self._resolve_symbol(asset, self.payload.get("symbol"))
         if self._pepperstone_gold_parity_enabled():
@@ -788,6 +821,8 @@ class CTraderOneShot:
             req_kwargs["stopLoss"] = stop_loss
         if take_profit > 0:
             req_kwargs["takeProfit"] = take_profit
+        self._mark_stage("order_submitted")
+        self._order_request_sent = True
         self.client.send(ProtoOANewOrderReq(**req_kwargs)).addCallbacks(
             lambda response: self._after_execution_event(response, symbol_id=symbol_id, symbol_name=symbol_name),
             self._fatal,
@@ -795,29 +830,34 @@ class CTraderOneShot:
 
     def _send_close_position(self) -> None:
         assert self.client is not None and self.account_id is not None
+        self._mark_stage("close_position_submit")
         self._last_order_broker_sizing = None
         position_id = _safe_int(self.payload.get("position_id") or self.payload.get("broker_trade_id") or self.payload.get("trade_id"), 0)
         volume = max(1, _safe_int(self.payload.get("volume"), 0))
         if position_id <= 0:
             self._finish(False, "cTrader position id missing for close")
             return
+        self._order_request_sent = True
         self.client.send(
             ProtoOAClosePositionReq(ctidTraderAccountId=self.account_id, positionId=position_id, volume=volume)
         ).addCallbacks(self._after_execution_event, self._fatal)
 
     def _send_update_stop(self) -> None:
         assert self.client is not None and self.account_id is not None
+        self._mark_stage("update_stop_submit")
         self._last_order_broker_sizing = None
         position_id = _safe_int(self.payload.get("position_id") or self.payload.get("broker_trade_id") or self.payload.get("trade_id"), 0)
         stop_loss = _safe_float(self.payload.get("stop_loss"), 0.0)
         if position_id <= 0 or stop_loss <= 0:
             self._finish(False, "cTrader position id or stop level missing for stop update")
             return
+        self._order_request_sent = True
         self.client.send(
             ProtoOAAmendPositionSLTPReq(ctidTraderAccountId=self.account_id, positionId=position_id, stopLoss=stop_loss)
         ).addCallbacks(self._after_execution_event, self._fatal)
 
     def _after_execution_event(self, response: Any, *, symbol_id: int = 0, symbol_name: str = "") -> None:
+        self._mark_stage("execution_event")
         parsed = self._parse(response, ProtoOAExecutionEvent)
         execution_type = int(getattr(parsed, "executionType", 0) or 0)
         position = getattr(parsed, "position", None)
