@@ -2051,12 +2051,23 @@ class TradingCore:
             logger.error(f"[TradingCore] on_position_updated error: {e}")
 
     @staticmethod
-    def _is_broker_managed_position(pos: Dict[str, Any]) -> bool:
+    def _position_broker_key(pos: Dict[str, Any]) -> str:
         metadata = pos.get("metadata") if isinstance(pos.get("metadata"), dict) else {}
         broker_execution = metadata.get("broker_execution") if isinstance(metadata.get("broker_execution"), dict) else {}
         broker = str(pos.get("broker") or broker_execution.get("broker") or "").strip().lower()
+        if broker:
+            return broker
         execution_mode = str(pos.get("execution_mode") or "").strip().lower()
-        return bool((broker and broker != "paper") or execution_mode.startswith(("ig", "ctrader")))
+        if execution_mode.startswith("ig"):
+            return "ig"
+        if execution_mode.startswith("ctrader"):
+            return "ctrader"
+        return ""
+
+    @staticmethod
+    def _is_broker_managed_position(pos: Dict[str, Any]) -> bool:
+        broker = TradingCore._position_broker_key(pos)
+        return bool(broker and broker != "paper")
 
     @staticmethod
     def _normalize_position_price(pos: Dict[str, Any], value: Any) -> float:
@@ -2356,10 +2367,36 @@ class TradingCore:
     def _reconcile_broker_positions(self, *, force: bool = False) -> None:
         if not self._broker_balance_enabled():
             return
-        if self.active_execution_broker() != "ig":
+        local_positions = list(self.state.get_open_positions() or [])
+        ig_positions = [
+            pos for pos in local_positions
+            if self._is_broker_managed_position(pos) and self._position_broker_key(pos) == "ig"
+        ]
+        if self.active_execution_broker() != "ig" and not ig_positions:
             return
         router = getattr(self, "exchange_router", None)
         if router is None or not hasattr(router, "list_open_positions"):
+            return
+        if hasattr(router, "has_adapter") and not router.has_adapter("ig"):
+            try:
+                self._ensure_execution_adapter_registered("ig")
+            except Exception as exc:
+                self._notify_broker_issue(
+                    "BROKER",
+                    "broker",
+                    str(exc),
+                    stage="broker position reconciliation",
+                    action="IG positions were not reconciled; IG adapter unavailable",
+                )
+                return
+        if hasattr(router, "has_adapter") and not router.has_adapter("ig"):
+            self._notify_broker_issue(
+                "BROKER",
+                "broker",
+                "IG adapter unavailable",
+                stage="broker position reconciliation",
+                action="IG positions were not reconciled; local state left unchanged",
+            )
             return
         now = time.monotonic()
         if not force and now - float(self._last_broker_position_reconcile or 0.0) < self._broker_reconcile_interval_seconds():
@@ -2394,9 +2431,7 @@ class TradingCore:
         active_missing_keys: set[str] = set()
         if not hasattr(self, "_broker_missing_position_first_seen"):
             self._broker_missing_position_first_seen = {}
-        for pos in list(self.state.get_open_positions() or []):
-            if not self._is_broker_managed_position(pos):
-                continue
+        for pos in ig_positions:
             deal_id = str(pos.get("broker_trade_id") or pos.get("trade_id") or "").strip()
             trade_id = str(pos.get("trade_id") or deal_id or "").strip()
             missing_key = deal_id or trade_id

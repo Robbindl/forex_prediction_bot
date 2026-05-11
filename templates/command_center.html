@@ -1255,8 +1255,8 @@ async function fetchCommandCenterOverview(){
     let lastError = '';
     try{
       const endpoints = [
-        {url:'/api/page-overview?page=command_center&days=30', timeoutMs: 7000},
-        {url:'/api/command-center', timeoutMs: 7000},
+        {url:'/api/page-overview?page=command_center&days=30', timeoutMs: 15000},
+        {url:'/api/command-center', timeoutMs: 15000},
       ];
       for(const endpoint of endpoints){
         const response = await fetchProtectedJson(endpoint.url, {timeoutMs: endpoint.timeoutMs});
