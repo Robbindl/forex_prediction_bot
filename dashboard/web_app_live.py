@@ -331,6 +331,17 @@ def _check_api_auth(fn):
 
         if not _API_KEY_HASH:
             return jsonify({"success": False, "error": "Dashboard authentication unavailable"}), 503
+
+        raw_api_key = str(
+            request.headers.get("X-Dashboard-Api-Key", "")
+            or request.args.get("api_key", "")
+            or ""
+        ).strip()
+        if raw_api_key:
+            provided_hash = hashlib.sha256(raw_api_key.encode()).hexdigest()
+            if provided_hash == _API_KEY_HASH:
+                return fn(*args, **kwargs)
+            logger.warning(f"[dashboard] Invalid API key header attempt from {request.remote_addr}")
         
         # Production mode: enforce authentication
         auth_header = request.headers.get("Authorization", "")
@@ -4166,7 +4177,15 @@ def api_status():
                 "provider_routing": _provider_routing_summary(),
                 "signal_diagnostics": diagnostic_summary,
             }
-        payload = _attach_authoritative_account_fields(payload, _authoritative_account_summary(core, positions))
+        payload = _attach_authoritative_account_fields(
+            payload,
+            _authoritative_account_summary(
+                core,
+                positions,
+                enrich_positions=False,
+                allow_broker=False,
+            ),
+        )
         _cache_set("status:v4", payload, ttl=5)
         return jsonify(payload)
     except Exception as e:
@@ -4182,7 +4201,12 @@ def api_system_status():
         if core:
             try:
                 positions = list(core.get_positions() or [])
-                account = _authoritative_account_summary(core, positions)
+                account = _authoritative_account_summary(
+                    core,
+                    positions,
+                    enrich_positions=False,
+                    allow_broker=False,
+                )
                 return jsonify({
                     "success": True,
                     "balance": round(float(account.get("balance", 0.0) or 0.0), 2),
@@ -4204,7 +4228,11 @@ def api_system_status():
             except Exception as e:
                 logger.error(f"[api_system_status] Failed to get core stats: {e}")
                 # Fallback response on error
-                account = _authoritative_account_summary(core)
+                account = _authoritative_account_summary(
+                    core,
+                    enrich_positions=False,
+                    allow_broker=False,
+                )
                 return jsonify({
                     "success": True, "balance": account.get("balance", _args.balance), "pnl": account.get("daily_pnl", 0),
                     "total_pnl": account.get("total_pnl", 0), "open_positions": account.get("open_positions", 0), "closed_positions": account.get("closed_trades", 0),
@@ -4216,7 +4244,12 @@ def api_system_status():
         # Standalone dashboard process: read the live book from PostgreSQL
         # instead of showing cosmetic defaults.
         perf, daily, positions, health, _closed_trades = _load_dashboard_db_runtime_snapshot()
-        account = _authoritative_account_summary(None, positions)
+        account = _authoritative_account_summary(
+            None,
+            positions,
+            enrich_positions=False,
+            allow_broker=False,
+        )
         payload = {
             "success": True,
             "balance": round(float(account.get("balance", _args.balance) or _args.balance), 2),
@@ -5284,10 +5317,16 @@ def _build_command_center_live_summary(perf: Dict[str, Any], daily: Dict[str, An
     }
 
 
-def _authoritative_account_summary(core: Any = None, positions: Any = None) -> Dict[str, Any]:
+def _authoritative_account_summary(
+    core: Any = None,
+    positions: Any = None,
+    *,
+    enrich_positions: bool = True,
+    allow_broker: bool = True,
+) -> Dict[str, Any]:
     perf, daily, snapshot_positions, _health, closed_trades = _command_center_core_snapshot(core)
     selected_positions = [dict(pos) for pos in list(positions if positions is not None else snapshot_positions or []) if isinstance(pos, dict)]
-    if selected_positions:
+    if selected_positions and enrich_positions:
         try:
             snapshots = _fetch_command_center_live_snapshots(selected_positions, max_age_seconds=None)
             selected_positions = _build_command_center_enriched_positions(selected_positions, snapshots)
@@ -5306,7 +5345,7 @@ def _authoritative_account_summary(core: Any = None, positions: Any = None) -> D
         from config.config import EXECUTION_MODE, IG_EXECUTION_ENABLED
 
         mode = str(EXECUTION_MODE or "paper").lower()
-        if IG_EXECUTION_ENABLED or mode in {"ig", "ig_demo", "ig_live"}:
+        if allow_broker and (IG_EXECUTION_ENABLED or mode in {"ig", "ig_demo", "ig_live"}):
             ig_account = _collect_ig_broker_snapshot()
             if ig_account.get("authenticated") and ig_account.get("balance") is not None:
                 broker_balance = float(ig_account.get("balance") or 0.0)
@@ -9598,6 +9637,29 @@ def _collect_ig_broker_snapshot() -> Dict[str, Any]:
     return payload
 
 
+def _collect_ig_broker_snapshot_nonblocking() -> Dict[str, Any]:
+    cached = _cache_get("ig_broker_snapshot:v1")
+    if cached is not None:
+        payload = _response_to_dict(cached)
+        return dict(payload or {}) if isinstance(payload, dict) else {}
+
+    _trigger_dashboard_payload_refresh(
+        "ig_broker_snapshot:v1",
+        builder=_collect_ig_broker_snapshot,
+        cache_key="ig_broker_snapshot:v1",
+        ttl=30,
+        last_good_key="ig_broker_snapshot:v1:last_good",
+        last_good_ttl=300,
+    )
+    return {
+        "enabled": True,
+        "authenticated": False,
+        "provider": "IG",
+        "degraded": True,
+        "reason": "broker_snapshot_warming",
+    }
+
+
 def _collect_performance_guard_snapshot() -> Dict[str, Any]:
     cache_key = "performance_guard_snapshot:v1"
     cached = _cache_get(cache_key)
@@ -9898,7 +9960,7 @@ def api_system_health():
             "stale_source_count": len(stale_sources),
             "never_seen_sources": list(health.get("never_seen_sources") or []),
             "never_seen_source_count": int(health.get("never_seen_source_count", 0) or 0),
-            "ig_broker":       dict(health.get("ig_broker") or _collect_ig_broker_snapshot()),
+            "ig_broker":       dict(health.get("ig_broker") or _collect_ig_broker_snapshot_nonblocking()),
             "recent_error_count": int(health.get("recent_error_count", 0) or 0),
             "recent_errors":    list(health.get("recent_errors") or []),
             "issues":           issues,
@@ -9907,7 +9969,14 @@ def api_system_health():
             "balance":          health.get("balance", _args.balance),
             "timestamp":        datetime.now().isoformat(),
         }
-        payload = _attach_authoritative_account_fields(payload, _authoritative_account_summary(core))
+        payload = _attach_authoritative_account_fields(
+            payload,
+            _authoritative_account_summary(
+                core,
+                enrich_positions=False,
+                allow_broker=False,
+            ),
+        )
         _cache_set("system_health:v5", payload, ttl=5)
         return jsonify(payload)
     except Exception as e:

@@ -336,8 +336,12 @@
 
     const requestInit = Object.assign({}, init || {});
     let headers = new Headers(requestInit.headers || (isRequestObject(input) ? input.headers : undefined) || {});
+    const storedApiKey = getStoredApiKey();
+    if (storedApiKey && !headers.has('X-Dashboard-Api-Key')) {
+      headers.set('X-Dashboard-Api-Key', storedApiKey);
+    }
     let token = getStoredToken();
-    if (!token) {
+    if (!token && !storedApiKey) {
       token = await ensureApiToken(false);
     }
     if (token && !headers.has('Authorization')) {
@@ -347,8 +351,21 @@
 
     let response = await nativeFetch(input, requestInit);
     if (response.status === 401 || response.status === 403) {
-      token = await ensureApiToken(true);
+      if (storedApiKey) {
+        token = await loginWithApiKey(storedApiKey);
+        if (!token) {
+          clearStoredApiKey();
+          setStoredToken('');
+        }
+      }
+      if (!token) {
+        token = await ensureApiToken(true);
+      }
       headers = new Headers(requestInit.headers || {});
+      const refreshedApiKey = getStoredApiKey();
+      if (refreshedApiKey && !headers.has('X-Dashboard-Api-Key')) {
+        headers.set('X-Dashboard-Api-Key', refreshedApiKey);
+      }
       if (token) {
         headers.set('Authorization', `Bearer ${token}`);
         requestInit.headers = headers;
