@@ -20,6 +20,7 @@ from ctrader_open_api.messages.OpenApiMessages_pb2 import (
     ProtoOAExecutionEvent,
     ProtoOAGetAccountListByAccessTokenReq,
     ProtoOANewOrderReq,
+    ProtoOAOrderErrorEvent,
     ProtoOAReconcileReq,
     ProtoOASpotEvent,
     ProtoOASubscribeSpotsReq,
@@ -300,6 +301,66 @@ class CTraderOneShot:
             f"ctrader_execution_unknown: {message}; check broker before retrying",
             **payload,
         )
+
+    def _defer_place_order_finish_for_reconcile(self, *, position_id: int, finish_payload: Dict[str, Any]) -> None:
+        if self.client is None or self.account_id is None:
+            self._finish(True, "execution accepted", **finish_payload)
+            return
+        self._mark_stage("execution_reconcile_wait")
+        reactor.callLater(1.0, self._request_place_order_reconcile, position_id, finish_payload)
+
+    def _request_place_order_reconcile(self, position_id: int, finish_payload: Dict[str, Any]) -> None:
+        if self._finished:
+            return
+        if self.client is None or self.account_id is None:
+            self._finish(True, "execution accepted", **finish_payload)
+            return
+        self._mark_stage("execution_reconcile_request")
+        self.client.send(ProtoOAReconcileReq(ctidTraderAccountId=self.account_id)).addCallbacks(
+            lambda response: self._after_place_order_reconcile(response, position_id=position_id, finish_payload=finish_payload),
+            lambda failure: self._finish_place_order_without_reconcile(failure, finish_payload),
+        )
+
+    def _finish_place_order_without_reconcile(self, failure: Any, finish_payload: Dict[str, Any]) -> None:
+        payload = dict(finish_payload)
+        payload["reconcile_error"] = str(getattr(failure, "value", failure))
+        self._finish(True, "execution accepted; reconcile unavailable", **payload)
+
+    def _after_place_order_reconcile(self, response: Any, *, position_id: int, finish_payload: Dict[str, Any]) -> None:
+        self._mark_stage("execution_reconcile_response")
+        payload = dict(finish_payload)
+        try:
+            parsed = self._parse(response, ProtoOAReconcileRes)
+            matched = None
+            for item in list(getattr(parsed, "position", []) or []):
+                if int(getattr(item, "positionId", 0) or 0) == int(position_id):
+                    matched = item
+                    break
+            if matched is not None:
+                trade_data = getattr(matched, "tradeData", None)
+                price = _safe_float(getattr(matched, "price", 0.0), 0.0)
+                volume = _safe_int(getattr(trade_data, "volume", 0), 0)
+                symbol_id = int(getattr(trade_data, "symbolId", 0) or 0)
+                if price > 0:
+                    payload["avg_price"] = price
+                if volume > 0:
+                    payload["volume"] = volume
+                    broker_sizing = dict(payload.get("broker_sizing") or {})
+                    if broker_sizing:
+                        broker_sizing["filled_volume"] = volume
+                        broker_sizing["filled_lots"] = broker_sizing.get("broker_size")
+                        payload["broker_sizing"] = broker_sizing
+                if symbol_id and not int(payload.get("symbol_id") or 0):
+                    payload["symbol_id"] = symbol_id
+                payload["raw"] = {
+                    "execution_event": dict(finish_payload.get("raw") or {}),
+                    "reconciled_position": _message_to_dict(matched),
+                }
+            else:
+                payload["reconcile_warning"] = f"position {position_id} not found after execution accepted"
+        except Exception as exc:
+            payload["reconcile_error"] = str(exc)
+        self._finish(True, "execution accepted", **payload)
 
     def _on_connected(self, client: Client) -> None:
         self._mark_stage("application_auth")
@@ -913,6 +974,20 @@ class CTraderOneShot:
     def _after_execution_event(self, response: Any, *, symbol_id: int = 0, symbol_name: str = "") -> None:
         self._mark_stage("execution_event")
         try:
+            order_error_type = int(ProtoOAOrderErrorEvent().payloadType)
+            if int(getattr(response, "payloadType", 0) or 0) == order_error_type:
+                parsed_error = self._parse(response, ProtoOAOrderErrorEvent)
+                error_code = str(getattr(parsed_error, "errorCode", "") or "ctrader_order_error")
+                description = str(getattr(parsed_error, "description", "") or error_code)
+                self._finish(
+                    False,
+                    f"ctrader_order_error: {error_code}: {description}",
+                    order_id=str(getattr(parsed_error, "orderId", "") or ""),
+                    position_id=str(getattr(parsed_error, "positionId", "") or ""),
+                    raw=_message_to_dict(parsed_error),
+                    response_meta=self._response_meta(response),
+                )
+                return
             parsed = self._parse(response, ProtoOAExecutionEvent)
             execution_type = int(getattr(parsed, "executionType", 0) or 0)
             position = getattr(parsed, "position", None)
@@ -952,23 +1027,27 @@ class CTraderOneShot:
             if broker_sizing:
                 broker_sizing["filled_volume"] = volume
                 broker_sizing["filled_lots"] = broker_sizing.get("broker_size")
-            self._finish(
-                True,
-                "execution accepted",
-                execution_type=execution_type,
-                position_id=str(position_id or ""),
-                order_id=str(order_id or ""),
-                deal_id=str(deal_id or ""),
-                avg_price=price,
-                volume=volume,
-                symbol_id=symbol_id,
-                symbol_name=symbol_name,
-                broker_sizing=broker_sizing,
-                account_id=str(self.account_id or ""),
-                environment=self.environment,
-                raw=raw,
-                response_meta=self._response_meta(response),
-            )
+            finish_payload = {
+                "execution_type": execution_type,
+                "position_id": str(position_id or ""),
+                "order_id": str(order_id or ""),
+                "deal_id": str(deal_id or ""),
+                "avg_price": price,
+                "volume": volume,
+                "symbol_id": symbol_id,
+                "symbol_name": symbol_name,
+                "broker_sizing": broker_sizing,
+                "account_id": str(self.account_id or ""),
+                "environment": self.environment,
+                "raw": raw,
+                "response_meta": self._response_meta(response),
+            }
+            if self.action == "place_order" and position_id and (
+                execution_type == ProtoOAExecutionType.ORDER_ACCEPTED or price <= 0.0 or volume <= 0
+            ):
+                self._defer_place_order_finish_for_reconcile(position_id=position_id, finish_payload=finish_payload)
+                return
+            self._finish(True, "execution accepted", **finish_payload)
         except Exception as exc:
             self._finish_execution_unknown(
                 f"cTrader execution event callback failed at stage={self._stage}: {exc}",
