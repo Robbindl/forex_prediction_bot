@@ -82,6 +82,7 @@
 
   function shouldStoreJsonPayload(payload) {
     if (!payload || typeof payload !== 'object' || payload.success !== true) return false;
+    if (payload.browser_fallback) return false;
     const reason = String(payload.degraded_reason || payload.reason || '').toLowerCase();
     const useful = !!(
       payload.command_center ||
@@ -128,6 +129,107 @@
     } catch (_) {
       return null;
     }
+  }
+
+  function dashboardPageOverviewFallback(input, reason) {
+    const url = toUrl(input);
+    if (!url || url.origin !== window.location.origin || url.pathname !== '/api/page-overview') return null;
+    const page = String(url.searchParams.get('page') || '').trim().replace(/-/g, '_');
+    if (!page) return null;
+    const daysValue = Number(url.searchParams.get('days') || 30);
+    const days = Number.isFinite(daysValue) ? daysValue : 30;
+    const fallbackReason = String(reason || 'browser_page_overview_fallback').slice(0, 160);
+    const now = new Date().toISOString();
+    const emptyCommandCenter = {
+      success: true,
+      degraded: true,
+      stale: true,
+      reason: fallbackReason,
+      degraded_reason: fallbackReason,
+      page,
+      live_summary: {},
+      positions: [],
+      top_opportunities: [],
+      latest_signals: [],
+      near_misses: [],
+      operator_focus: {items: [], degraded: true, reason: fallbackReason},
+      elite_entry_summary: {items: [], degraded: true, reason: fallbackReason},
+      why_not_traded: {items: [], rows: [], degraded: true, reason: fallbackReason},
+      session_radar: {rows: [], degraded: true, reason: fallbackReason},
+      watchlist_ladder: {hot: [], almost_ready: [], blocked: [], inactive: [], degraded: true, reason: fallbackReason},
+      decision_context: {rows: [], state: 'warming', degraded: true, reason: fallbackReason},
+    };
+    const payload = {
+      success: true,
+      browser_fallback: true,
+      degraded: true,
+      stale: true,
+      reason: fallbackReason,
+      degraded_reason: fallbackReason,
+      page,
+      days,
+      generated_at: now,
+      status: {success: true, degraded: true, reason: fallbackReason, live_summary: {}},
+      command_center: emptyCommandCenter,
+      trade_history_summary: {success: true, trades: 0, rows: [], degraded: true, reason: fallbackReason},
+    };
+
+    if (page === 'risk_dashboard') {
+      payload.risk = {
+        success: true,
+        degraded: true,
+        reason: fallbackReason,
+        portfolio: {},
+        positions: [],
+        categories: {},
+        trade_statistics: {},
+        blocked_candidate_stats: {},
+        weak_queue: [],
+      };
+    } else if (page === 'sentiment_intelligence') {
+      payload.sentiment = {success: true, degraded: true, reason: fallbackReason, items: []};
+      payload.by_asset = {success: true, assets: []};
+      payload.events = {success: true, events: []};
+      payload.heatmap = {success: true, items: []};
+    } else if (page === 'order_flow') {
+      payload.imbalance = {success: true, imbalances: {}, degraded: true, reason: fallbackReason};
+      payload.walls = {success: true, walls: []};
+      payload.hunts = {success: true, hunts: []};
+      payload.depth = {success: true, assets: [], depth: {}, degraded: true, reason: fallbackReason};
+    } else if (page === 'market_intelligence') {
+      payload.assets = {success: true, assets: []};
+      payload.events = {success: true, events: [], risk_outlook: {}};
+      payload.heatmap = {success: true, items: []};
+      payload.signals = [];
+    } else if (page === 'playbook_intel') {
+      payload.signals = [];
+      payload.near_misses = [];
+      payload.live_quality = {success: true, signal_count: 0, degraded: true, reason: fallbackReason};
+      payload.playbook_performance = {};
+      payload.asset_playbook_matrix = [];
+    } else if (page === 'system_monitor') {
+      payload.health = {success: true, degraded: true, reason: fallbackReason};
+      payload.snapshot = {};
+      payload.metrics = {};
+      payload.errors = {};
+    } else if (page === 'whale_intelligence') {
+      payload.whale = {success: true, alerts: [], recent: [], degraded: true, reason: fallbackReason};
+      payload.alerts = [];
+      payload.recent = [];
+      payload.alert_count_24h = 0;
+      payload.whale_alerts_24h = 0;
+    } else if (page === 'intelligence_alerts') {
+      payload.alerts = [];
+      payload.by_priority = {};
+      payload.journals = [];
+      payload.alert_count = 0;
+      payload.count = 0;
+    } else if (page === 'architecture_lab') {
+      payload.health = {success: true, degraded: true, reason: fallbackReason};
+      payload.system_monitor = {};
+      payload.services = [];
+    }
+    return payload;
   }
 
   function getStoredToken() {
@@ -262,6 +364,7 @@
     const method = String((opts.init && opts.init.method) || 'GET').toUpperCase();
     const requestKey = method === 'GET' ? `${method}:${String(input || '')}` : '';
     const cacheKey = jsonCacheRequestKey(input, method);
+    const pageOverviewFallback = fallbackReason => dashboardPageOverviewFallback(input, fallbackReason);
 
     if (requestKey && inflightJsonRequests.has(requestKey)) {
       return inflightJsonRequests.get(requestKey);
@@ -281,13 +384,16 @@
         if (timeoutId) window.clearTimeout(timeoutId);
         const payload = await response.json().catch(() => ({}));
         if (!response.ok && (!payload || typeof payload !== 'object')) {
-          return readRememberedJsonPayload(cacheKey) || {success: false, error: `HTTP ${response.status}`};
+          return readRememberedJsonPayload(cacheKey) || pageOverviewFallback(`HTTP ${response.status}`) || {success: false, error: `HTTP ${response.status}`};
         }
         if (payload && typeof payload === 'object' && !payload.success && !payload.error && !response.ok) {
           payload.error = `HTTP ${response.status}`;
         }
+        if (pageOverviewFallback() && (!payload || typeof payload !== 'object' || payload.success !== true)) {
+          return readRememberedJsonPayload(cacheKey) || pageOverviewFallback((payload && (payload.error || payload.reason || payload.degraded_reason)) || `HTTP ${response.status}`);
+        }
         if (!response.ok || (payload && typeof payload === 'object' && payload.success === false)) {
-          return readRememberedJsonPayload(cacheKey) || payload;
+          return readRememberedJsonPayload(cacheKey) || pageOverviewFallback((payload && (payload.error || payload.reason || payload.degraded_reason)) || `HTTP ${response.status}`) || payload;
         }
         rememberJsonPayload(cacheKey, payload);
         return payload;
@@ -296,9 +402,10 @@
         const remembered = readRememberedJsonPayload(cacheKey);
         if (remembered) return remembered;
         if (error && error.name === 'AbortError') {
-          return {success: false, error: 'timeout'};
+          return pageOverviewFallback('timeout') || {success: false, error: 'timeout'};
         }
-        return {success: false, error: error && error.message ? error.message : 'request_failed'};
+        const errorMessage = error && error.message ? error.message : 'request_failed';
+        return pageOverviewFallback(errorMessage) || {success: false, error: errorMessage};
       } finally {
         if (requestKey) {
           inflightJsonRequests.delete(requestKey);
