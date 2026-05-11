@@ -599,7 +599,7 @@ class CTraderOneShot:
     @staticmethod
     def _symbol_pip_size(symbol: Any) -> float:
         pip_position = int(getattr(symbol, "pipPosition", 0) or 0)
-        if pip_position <= 0:
+        if pip_position < 0:
             return 0.0
         return 10.0 ** (-pip_position)
 

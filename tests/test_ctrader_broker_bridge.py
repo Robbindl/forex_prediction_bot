@@ -58,3 +58,9 @@ def test_snap_volume_ignores_absurd_ctrader_volume_sentinels() -> None:
 
     assert volume == 1
     assert lots == 0.01
+
+
+def test_index_zero_pip_position_is_valid_one_point_pip() -> None:
+    symbol = SimpleNamespace(pipPosition=0)
+
+    assert CTraderOneShot._symbol_pip_size(symbol) == 1.0
