@@ -77,7 +77,7 @@ for _asset, _meta in _SUPPORTED_ASSETS.items():
         _ALIASES[_symbol_key(_alias)] = _asset
 
 
-_PEPPERSTONE_HIGH_MIN_CRYPTO_ASSETS = {"BTC-USD", "ETH-USD", "BNB-USD", "SOL-USD"}
+_PEPPERSTONE_UNROUTABLE_CRYPTO_ASSETS = {"BNB-USD", "SOL-USD"}
 
 
 class CTraderAdapter(ExchangeAdapter):
@@ -206,12 +206,12 @@ class CTraderAdapter(ExchangeAdapter):
         if (
             broker_key == "pepperstone"
             and category == "crypto"
-            and canonical in _PEPPERSTONE_HIGH_MIN_CRYPTO_ASSETS
+            and canonical in _PEPPERSTONE_UNROUTABLE_CRYPTO_ASSETS
             and not self._allows_high_min_crypto()
         ):
             return (
                 False,
-                f"Pepperstone cTrader minimum volume is too high for {canonical}; execution disabled before broker submission",
+                f"Pepperstone cTrader has no normal-size tradable contract for {canonical}; execution disabled before broker submission",
             )
         if not self._enabled():
             return False, f"cTrader execution disabled for {self._broker_name()}; set CTRADER_EXECUTION_ENABLED=true or broker-specific cTrader execution enabled"
@@ -314,8 +314,11 @@ class CTraderAdapter(ExchangeAdapter):
             return OrderResult(order_id="", status="FAILED", error=str(result.get("error") or result), raw=result)
 
         order_id = str(result.get("position_id") or result.get("order_id") or result.get("deal_id") or payload["client_order_id"])
-        avg_price = float(result.get("avg_price") or payload.get("entry_price") or 0.0)
+        broker_avg_price = float(result.get("avg_price") or payload.get("entry_price") or 0.0)
         broker_sizing = dict(result.get("broker_sizing") or {})
+        price_conversion = dict(broker_sizing.get("price_conversion") or {})
+        broker_to_signal_rate = float(price_conversion.get("broker_to_signal_rate") or 0.0)
+        avg_price = broker_avg_price * broker_to_signal_rate if broker_to_signal_rate > 0.0 else broker_avg_price
         filled_size = float(broker_sizing.get("local_position_size") or self._local_size_from_volume(result.get("volume"), payload.get("local_size")))
         if not broker_sizing:
             broker_sizing = {
@@ -333,6 +336,7 @@ class CTraderAdapter(ExchangeAdapter):
                 "broker": "ctrader",
                 "request": payload,
                 "broker_sizing": broker_sizing,
+                "broker_avg_price": broker_avg_price,
             }
         )
         raw["trade"] = self._build_trade_snapshot(req, payload, result, order_id=order_id, avg_price=avg_price, filled_size=filled_size)

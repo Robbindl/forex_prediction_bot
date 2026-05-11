@@ -72,6 +72,11 @@ SUPPORTED_ASSETS: Dict[str, Dict[str, Any]] = {
     "JPN225": {"category": "indices", "aliases": ("JPN225", "JP225", "JAP225", "NI225")},
 }
 
+PEPPERSTONE_CRYPTO_ALT_BASES = {
+    "BTC-USD": "BTC",
+    "ETH-USD": "ETH",
+}
+
 
 def _stdout(payload: Dict[str, Any]) -> None:
     sys.stdout.write(json.dumps(payload, ensure_ascii=True, separators=(",", ":"), default=str) + "\n")
@@ -488,6 +493,9 @@ class CTraderOneShot:
             raw_name = str(getattr(item, "symbolName", "") or "")
             description = str(getattr(item, "description", "") or "")
             names = {_normalize_name(raw_name), _normalize_name(description)}
+            if raw_name:
+                lookup.setdefault(str(raw_name).strip().upper(), (symbol_id, raw_name))
+                lookup.setdefault(_normalize_name(raw_name), (symbol_id, raw_name))
             for asset, meta in SUPPORTED_ASSETS.items():
                 aliases = {_normalize_name(alias) for alias in meta["aliases"]}
                 if names & aliases:
@@ -508,6 +516,48 @@ class CTraderOneShot:
             if key and key in self.symbol_lookup:
                 return self.symbol_lookup[key]
         raise RuntimeError(f"cTrader symbol not found for {asset or symbol}")
+
+    def _canonical_supported_asset(self, asset: Any) -> str:
+        direct = str(asset or "").strip().upper()
+        if direct in SUPPORTED_ASSETS:
+            return direct
+        normalized = _normalize_name(asset)
+        for key, meta in SUPPORTED_ASSETS.items():
+            aliases = {key, *(meta.get("aliases") or ())}
+            if normalized in {_normalize_name(item) for item in aliases}:
+                return key
+        return direct
+
+    def _pepperstone_crypto_alt_quotes(self) -> List[str]:
+        raw = (
+            os.getenv("PEPPERSTONE_CTRADER_CRYPTO_ALT_QUOTES", "").strip()
+            or os.getenv("PEPPERSTONE_CTRADER_LIVE_CRYPTO_ALT_QUOTES", "").strip()
+            or "EUR,GBP,AUD"
+        )
+        return [item.strip().upper() for item in raw.replace(";", ",").split(",") if item.strip()]
+
+    def _resolve_pepperstone_crypto_alt(self, asset: Any) -> Optional[Dict[str, Any]]:
+        if _broker_key(os.getenv("CTRADER_EXECUTION_BROKER_NAME", "")) != "pepperstone":
+            return None
+        canonical = self._canonical_supported_asset(asset)
+        base = PEPPERSTONE_CRYPTO_ALT_BASES.get(canonical)
+        if not base:
+            return None
+        for quote in self._pepperstone_crypto_alt_quotes():
+            symbol_name = f"{base}{quote}"
+            key = _normalize_name(symbol_name)
+            if key in self.symbol_lookup:
+                symbol_id, resolved_name = self.symbol_lookup[key]
+                return {
+                    "requested_asset": canonical,
+                    "symbol_id": symbol_id,
+                    "symbol_name": resolved_name,
+                    "broker_base": base,
+                    "broker_quote": quote,
+                    "signal_quote": "USD",
+                    "reason": "pepperstone_crypto_alt_quote",
+                }
+        return None
 
     def _send_preflight(self) -> None:
         requested = self.payload.get("assets")
@@ -649,13 +699,19 @@ class CTraderOneShot:
         digits = max(0, int(digits or 0))
         return float(f"{value:.{digits}f}")
 
-    def _order_price_precision(self, symbol: Any) -> Dict[str, Any]:
+    def _order_price_precision(self, symbol: Any, *, price_factor: float = 1.0, price_conversion: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
         digits = self._symbol_price_digits(symbol)
+        price_factor = float(price_factor or 1.0)
         precision: Dict[str, Any] = {"digits": digits}
+        if price_conversion:
+            precision["price_conversion"] = dict(price_conversion)
         for key in ("entry_price", "stop_loss", "take_profit"):
             raw = _safe_float(self.payload.get(key), 0.0)
-            rounded = self._round_price_to_digits(raw, digits)
+            converted = raw * price_factor if raw > 0.0 else 0.0
+            rounded = self._round_price_to_digits(converted, digits)
             precision[f"raw_{key}"] = raw
+            if price_factor != 1.0:
+                precision[f"converted_{key}"] = converted
             precision[key] = rounded
             precision[f"{key}_changed"] = bool(raw > 0.0 and rounded != raw)
         return precision
@@ -884,6 +940,27 @@ class CTraderOneShot:
             except Exception as exc:
                 self._finish(False, f"Pepperstone cTrader lot sizing failed: {exc}")
 
+    def _order_price_factor(self) -> Tuple[float, Dict[str, Any]]:
+        broker_quote = str(self._pending_order.get("broker_quote") or "").upper()
+        signal_quote = str(self._pending_order.get("signal_quote") or "").upper()
+        if not broker_quote or not signal_quote or broker_quote == signal_quote:
+            return 1.0, {}
+        if signal_quote != "USD":
+            raise RuntimeError(f"unsupported cTrader signal quote conversion {signal_quote}->{broker_quote}")
+        meta = self._pending_conversions.get(broker_quote) or {}
+        quote_to_usd = float(meta.get("rate") or 0.0)
+        if quote_to_usd <= 0.0:
+            raise RuntimeError(f"live USD conversion missing for broker quote {broker_quote}")
+        signal_to_broker = 1.0 / quote_to_usd
+        return signal_to_broker, {
+            "signal_quote": signal_quote,
+            "broker_quote": broker_quote,
+            "signal_to_broker_rate": signal_to_broker,
+            "broker_to_signal_rate": quote_to_usd,
+            "conversion_symbol": str(meta.get("symbol_name") or ""),
+            "conversion_source": "live_ctrader_spot",
+        }
+
     def _submit_pepperstone_gold_parity_order(self) -> None:
         target_symbol = self._pending_specs.get("target")
         gold_symbol = self._pending_specs.get("gold")
@@ -939,7 +1016,16 @@ class CTraderOneShot:
             "gold_profile": gold_profile,
             "target_profile": target_profile,
         }
-        price_precision = self._order_price_precision(target_symbol)
+        price_factor, price_conversion = self._order_price_factor()
+        if price_conversion:
+            sizing["execution_symbol_override"] = {
+                "requested_asset": str(self._pending_order.get("requested_asset") or asset),
+                "broker_symbol": str(self._pending_order.get("symbol_name") or ""),
+                "broker_quote": str(self._pending_order.get("broker_quote") or ""),
+                "reason": str(self._pending_order.get("symbol_override_reason") or ""),
+            }
+            sizing["price_conversion"] = price_conversion
+        price_precision = self._order_price_precision(target_symbol, price_factor=price_factor, price_conversion=price_conversion)
         sizing["price_precision"] = price_precision
         if self.action == "order_preflight":
             self._finish(
@@ -962,6 +1048,8 @@ class CTraderOneShot:
             volume,
             broker_sizing=sizing,
             symbol_spec=target_symbol,
+            price_factor=price_factor,
+            price_conversion=price_conversion,
         )
 
     def _send_balance(self) -> None:
@@ -1002,6 +1090,10 @@ class CTraderOneShot:
         self._mark_stage("place_order_prepare")
         asset = self.payload.get("asset") or self.payload.get("symbol") or ""
         symbol_id, symbol_name = self._resolve_symbol(asset, self.payload.get("symbol"))
+        symbol_override = self._resolve_pepperstone_crypto_alt(asset)
+        if symbol_override:
+            symbol_id = int(symbol_override["symbol_id"])
+            symbol_name = str(symbol_override["symbol_name"])
         if self._pepperstone_gold_parity_enabled():
             try:
                 gold_symbol_id, gold_symbol_name = self._resolve_symbol("XAU/USD", "XAUUSD")
@@ -1015,6 +1107,16 @@ class CTraderOneShot:
                 "gold_symbol_id": gold_symbol_id,
                 "gold_symbol_name": gold_symbol_name,
             }
+            if symbol_override:
+                self._pending_order.update(
+                    {
+                        "requested_asset": symbol_override["requested_asset"],
+                        "broker_base": symbol_override["broker_base"],
+                        "broker_quote": symbol_override["broker_quote"],
+                        "signal_quote": symbol_override["signal_quote"],
+                        "symbol_override_reason": symbol_override["reason"],
+                    }
+                )
             self._pending_specs = {}
             self._request_symbol_detail("target", symbol_id)
             return
@@ -1036,6 +1138,8 @@ class CTraderOneShot:
         *,
         broker_sizing: Optional[Dict[str, Any]] = None,
         symbol_spec: Any = None,
+        price_factor: float = 1.0,
+        price_conversion: Optional[Dict[str, Any]] = None,
     ) -> None:
         assert self.client is not None and self.account_id is not None
         side = str(self.payload.get("side") or "BUY").upper()
@@ -1055,10 +1159,12 @@ class CTraderOneShot:
         stop_loss = _safe_float(self.payload.get("stop_loss"), 0.0)
         take_profit = _safe_float(self.payload.get("take_profit"), 0.0)
         if symbol_spec is not None:
-            price_precision = self._order_price_precision(symbol_spec)
+            price_precision = self._order_price_precision(symbol_spec, price_factor=price_factor, price_conversion=price_conversion)
             stop_loss = float(price_precision.get("stop_loss") or 0.0)
             take_profit = float(price_precision.get("take_profit") or 0.0)
             self._last_order_broker_sizing["price_precision"] = price_precision
+            if price_conversion:
+                self._last_order_broker_sizing["price_conversion"] = dict(price_conversion)
         if stop_loss > 0:
             req_kwargs["stopLoss"] = stop_loss
         if take_profit > 0:
@@ -1093,10 +1199,11 @@ class CTraderOneShot:
         if position_id <= 0 or stop_loss <= 0:
             self._finish(False, "cTrader position id or stop level missing for stop update")
             return
-        asset = self.payload.get("asset") or self.payload.get("symbol") or ""
-        if asset:
+        asset = self.payload.get("asset") or ""
+        symbol = self.payload.get("symbol") or asset
+        if symbol or asset:
             try:
-                symbol_id, symbol_name = self._resolve_symbol(asset, self.payload.get("symbol"))
+                symbol_id, symbol_name = self._resolve_symbol(symbol or asset, symbol)
                 self._pending_order = {
                     "position_id": position_id,
                     "stop_loss": stop_loss,

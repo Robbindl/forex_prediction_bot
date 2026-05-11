@@ -66,13 +66,23 @@ def test_index_zero_pip_position_is_valid_one_point_pip() -> None:
     assert CTraderOneShot._symbol_pip_size(symbol) == 1.0
 
 
-def test_pepperstone_high_min_crypto_is_blocked_before_submission(monkeypatch) -> None:
+def test_pepperstone_unroutable_crypto_is_blocked_before_submission(monkeypatch) -> None:
     from execution.ctrader_adapter import CTraderAdapter
 
     monkeypatch.delenv("PEPPERSTONE_CTRADER_EXECUTION_ALLOW_HIGH_MIN_CRYPTO", raising=False)
     adapter = CTraderAdapter()
 
-    supported, reason = adapter.supports_asset("ETH-USD", "crypto")
+    supported, reason = adapter.supports_asset("BNB-USD", "crypto")
 
     assert supported is False
-    assert "minimum volume is too high" in reason
+    assert "no normal-size tradable contract" in reason
+
+
+def test_pepperstone_btc_eth_are_allowed_for_alt_quote_execution(monkeypatch) -> None:
+    from execution.ctrader_adapter import CTraderAdapter
+
+    monkeypatch.delenv("PEPPERSTONE_CTRADER_EXECUTION_DISABLED_ASSETS", raising=False)
+    adapter = CTraderAdapter()
+
+    assert adapter.supports_asset("BTC-USD", "crypto")[0] is True
+    assert adapter.supports_asset("ETH-USD", "crypto")[0] is True
