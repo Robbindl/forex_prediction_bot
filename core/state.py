@@ -637,6 +637,30 @@ class SystemState:
                 self._persist_json()
             return reset_required
 
+    def reset_broker_daily_anchor(
+        self,
+        balance: float,
+        *,
+        trading_date: Optional[str] = None,
+        account_id: str = "",
+        environment: str = "",
+        reason: str = "external balance adjustment",
+    ) -> None:
+        safe_date = str(trading_date or _trading_day_date()).strip() or _trading_day_date()
+        safe_balance = max(0.0, float(balance or 0.0))
+        with self._lock:
+            self._broker_daily_start_balance = safe_balance
+            self._broker_daily_date = safe_date
+            self._broker_daily_account_id = str(account_id or "").strip()
+            self._broker_daily_environment = str(environment or "").strip().lower()
+            self._persist_json()
+        logger.warning(
+            "[State] Broker daily guard anchor reset to %.2f for %s (%s)",
+            safe_balance,
+            safe_date,
+            reason,
+        )
+
     def check_day_rollover(self) -> bool:
         with self._lock:
             today = _trading_day_date()

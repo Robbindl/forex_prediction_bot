@@ -3521,6 +3521,45 @@ class TradingCore:
             day_start_balance = broker_balance
         day_start_balance = max(1.0, day_start_balance)
 
+        external_adjustment_pct = max(
+            0.0,
+            self._broker_env_float("BROKER_DAILY_ANCHOR_ADJUSTMENT_RESET_PCT", 25.0),
+        )
+        external_adjustment_abs = max(
+            0.0,
+            self._broker_env_float("BROKER_DAILY_ANCHOR_ADJUSTMENT_RESET_USD", 100.0),
+        )
+        balance_delta = round(broker_balance - day_start_balance, 2)
+        balance_delta_abs = abs(balance_delta)
+        balance_delta_pct = (balance_delta_abs / day_start_balance) * 100.0 if day_start_balance > 0.0 else 0.0
+        if (
+            not broker_positions
+            and day_start_balance > 0.0
+            and balance_delta_abs >= external_adjustment_abs
+            and balance_delta_pct >= external_adjustment_pct
+        ):
+            reset_anchor = getattr(self.state, "reset_broker_daily_anchor", None)
+            if callable(reset_anchor):
+                try:
+                    reset_anchor(
+                        broker_balance,
+                        trading_date=self._broker_daily_guard_trading_date(),
+                        account_id=account_id,
+                        environment=environment,
+                        reason=(
+                            f"detected broker balance adjustment {balance_delta:+.2f} "
+                            f"({balance_delta_pct:.1f}%) with no open broker positions"
+                        ),
+                    )
+                    logger.warning(
+                        "[TradingCore] Broker daily guard anchor reset after external balance adjustment: "
+                        f"old_start={day_start_balance:.2f} new_start={broker_balance:.2f} "
+                        f"delta={balance_delta:+.2f}"
+                    )
+                    day_start_balance = max(1.0, broker_balance)
+                except Exception as exc:
+                    logger.debug(f"[TradingCore] Broker daily anchor reset failed: {exc}")
+
         broker_open_pnl_raw = summary.get("profit_loss")
         broker_open_pnl = round(
             floating_pnl if broker_open_pnl_raw is None else self._float_or_zero(broker_open_pnl_raw),
