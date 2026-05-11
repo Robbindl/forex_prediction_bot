@@ -83,7 +83,17 @@
   function shouldStoreJsonPayload(payload) {
     if (!payload || typeof payload !== 'object' || payload.success !== true) return false;
     const reason = String(payload.degraded_reason || payload.reason || '').toLowerCase();
-    if (payload.degraded && /refreshing|warming|unavailable|build_failed|timeout|timed out/.test(reason)) return false;
+    const useful = !!(
+      payload.command_center ||
+      payload.live_summary ||
+      payload.why_not_traded ||
+      payload.watchlist_ladder ||
+      payload.session_radar ||
+      payload.decision_context ||
+      payload.balance != null ||
+      (Array.isArray(payload.positions) && payload.positions.length)
+    );
+    if (payload.degraded && /refreshing|warming|unavailable|build_failed|timeout|timed out/.test(reason) && !useful) return false;
     return true;
   }
 

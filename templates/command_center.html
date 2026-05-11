@@ -1065,8 +1065,7 @@ function normalizeCommandCenterPayload(payload){
 function isUsefulCommandCenterPayload(payload){
   if(!payload || payload.success !== true)return false;
   const degradedReason = String(payload.degraded_reason || '').toLowerCase();
-  if(payload.degraded && /refreshing|warming|unavailable|build_failed|timed out|timeout/.test(degradedReason))return false;
-  return !!(
+  const useful = !!(
     payload.live_summary ||
     payload.why_not_traded ||
     payload.watchlist_ladder ||
@@ -1077,6 +1076,8 @@ function isUsefulCommandCenterPayload(payload){
     (Array.isArray(payload.positions) && payload.positions.length) ||
     payload.balance != null
   );
+  if(payload.degraded && /refreshing|warming|unavailable|build_failed|timed out|timeout/.test(degradedReason) && !useful)return false;
+  return useful;
 }
 function rememberCommandCenterPayload(payload){
   if(!isUsefulCommandCenterPayload(payload))return;

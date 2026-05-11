@@ -165,7 +165,25 @@ CORS(app, resources={r"/api/*": {"origins": DASHBOARD_CORS_ORIGINS}})
 _COMMAND_CENTER_CACHE_TTL = 15
 _COMMAND_CENTER_LAST_GOOD_TTL = 6 * 60 * 60
 _COMMAND_CENTER_DEGRADED_CACHE_TTL = 5
-_COMMAND_CENTER_BUILD_TIMEOUT_SECONDS = 7.5
+
+
+def _dashboard_float_env(name: str, default: float, *aliases: str) -> float:
+    for key in (name, *aliases):
+        raw = os.getenv(key)
+        if raw in (None, ""):
+            continue
+        try:
+            return max(1.0, float(raw))
+        except Exception:
+            continue
+    return float(default)
+
+
+_COMMAND_CENTER_BUILD_TIMEOUT_SECONDS = _dashboard_float_env(
+    "DASHBOARD_COMMAND_CENTER_BUILD_TIMEOUT_SECONDS",
+    12.0,
+    "COMMAND_CENTER_BUILD_TIMEOUT_SECONDS",
+)
 _COMMAND_CENTER_PAYLOAD_CACHE_KEY = "command_center_payload:v3"
 _COMMAND_CENTER_PAYLOAD_LAST_GOOD_KEY = "command_center_payload:v3:last_good"
 _COMMAND_CENTER_PAYLOAD_REFRESH_KEY = "command_center_payload:v3"
@@ -173,7 +191,11 @@ _COMMAND_CENTER_RUNTIME_CONTEXT_LOG_KEY = "COMMAND_CENTER_CONTEXT_LOG"
 _PAGE_OVERVIEW_CACHE_TTL = 15
 _PAGE_OVERVIEW_LAST_GOOD_TTL = 6 * 60 * 60
 _PAGE_OVERVIEW_DEGRADED_CACHE_TTL = 5
-_PAGE_OVERVIEW_BUILD_TIMEOUT_SECONDS = 4.0
+_PAGE_OVERVIEW_BUILD_TIMEOUT_SECONDS = _dashboard_float_env(
+    "DASHBOARD_PAGE_OVERVIEW_BUILD_TIMEOUT_SECONDS",
+    8.0,
+    "PAGE_OVERVIEW_BUILD_TIMEOUT_SECONDS",
+)
 _PAGE_OVERVIEW_CACHE_VERSION = "v6"
 _CLOSED_TRADES_CACHE_TTL = 10
 _TRADE_HISTORY_CACHE_TTL = 15

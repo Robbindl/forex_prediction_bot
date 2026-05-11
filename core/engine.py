@@ -423,8 +423,7 @@ class TradingCore:
         provider = str(provider or "").strip().lower()
         if provider == "ig":
             categories = [item.lower() for item in self._csv_env("IG_EXECUTION_ROUTE_CATEGORIES")]
-            mode = str(EXECUTION_MODE or "paper").lower()
-            if not categories and mode in {"ig", "ig_demo", "ig_live"}:
+            if not categories:
                 categories = ["forex", "crypto", "commodities", "indices"]
             return categories, self._csv_env("IG_EXECUTION_ROUTE_ASSETS")
         if provider == "ctrader":
