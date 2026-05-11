@@ -689,8 +689,10 @@ class CTraderOneShot:
         raw_min_lots = min_volume / lot_size if min_volume > 0 else 0.0
         raw_max_lots = max_volume / lot_size if max_volume > 0 else 0.0
         if raw_min_lots > max_lots_cap * 1000:
-            min_volume = 0
-            raw_min_lots = 0.0
+            raise RuntimeError(
+                f"cTrader symbol minimum volume {raw_min_lots:.2f} lots exceeds configured max cap {max_lots_cap:.2f}; "
+                "symbol is not tradable at the current risk cap"
+            )
         if raw_max_lots > max_lots_cap * 1000:
             max_volume = 0
             raw_max_lots = 0.0
@@ -911,8 +913,6 @@ class CTraderOneShot:
         target_lot_size = max(1, self._symbol_lot_size_cents(target_symbol))
         raw_min_lots = int(getattr(target_symbol, "minVolume", 0) or 0) / target_lot_size
         raw_max_lots = int(getattr(target_symbol, "maxVolume", 0) or 0) / target_lot_size
-        if raw_min_lots > max_lots_cap * 1000:
-            raw_min_lots = 0.0
         if raw_max_lots > max_lots_cap * 1000:
             raw_max_lots = 0.0
         display_min_lots = max(0.01, raw_min_lots if raw_min_lots > 0 else 0.01)

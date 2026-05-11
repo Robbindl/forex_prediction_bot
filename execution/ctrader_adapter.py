@@ -77,6 +77,9 @@ for _asset, _meta in _SUPPORTED_ASSETS.items():
         _ALIASES[_symbol_key(_alias)] = _asset
 
 
+_PEPPERSTONE_HIGH_MIN_CRYPTO_ASSETS = {"BTC-USD", "ETH-USD", "BNB-USD", "SOL-USD"}
+
+
 class CTraderAdapter(ExchangeAdapter):
     """cTrader execution adapter.
 
@@ -180,6 +183,10 @@ class CTraderAdapter(ExchangeAdapter):
         allowed = {item.strip().lower() for item in raw.replace(";", ",").split(",") if item.strip()}
         return allowed or {"forex", "crypto", "commodities"}
 
+    def _allows_high_min_crypto(self) -> bool:
+        value = self._profile_env("ALLOW_HIGH_MIN_CRYPTO", os.getenv("CTRADER_EXECUTION_ALLOW_HIGH_MIN_CRYPTO", "false"))
+        return self._bool_env(value, False)
+
     def _credentials_ready(self) -> bool:
         profile = self._profile_config()
         has_tokens = bool(profile["ACCESS_TOKEN"] or profile["REFRESH_TOKEN"])
@@ -195,6 +202,17 @@ class CTraderAdapter(ExchangeAdapter):
             return False, f"cTrader execution category not allowed: {category or 'unknown'}"
         if canonical not in _SUPPORTED_ASSETS:
             return False, f"cTrader symbol not mapped for {asset}"
+        broker_key = str(self._broker_name() or "").strip().lower().replace(" ", "").replace("_", "")
+        if (
+            broker_key == "pepperstone"
+            and category == "crypto"
+            and canonical in _PEPPERSTONE_HIGH_MIN_CRYPTO_ASSETS
+            and not self._allows_high_min_crypto()
+        ):
+            return (
+                False,
+                f"Pepperstone cTrader minimum volume is too high for {canonical}; execution disabled before broker submission",
+            )
         if not self._enabled():
             return False, f"cTrader execution disabled for {self._broker_name()}; set CTRADER_EXECUTION_ENABLED=true or broker-specific cTrader execution enabled"
         if not self._dry_run() and not self._credentials_ready():

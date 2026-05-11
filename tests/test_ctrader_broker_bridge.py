@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
+import pytest
+
 from integrations.ctrader_broker_bridge.ctrader_broker_bridge import CTraderOneShot
 
 
@@ -46,7 +48,7 @@ def test_crypto_max_lots_allows_explicit_category_override(monkeypatch) -> None:
     assert source == "crypto_env_cap"
 
 
-def test_snap_volume_ignores_absurd_ctrader_volume_sentinels() -> None:
+def test_snap_volume_rejects_broker_minimum_above_risk_cap() -> None:
     symbol = SimpleNamespace(
         lotSize=100,
         minVolume=99999999999900,
@@ -54,13 +56,23 @@ def test_snap_volume_ignores_absurd_ctrader_volume_sentinels() -> None:
         stepVolume=0,
     )
 
-    volume, lots = CTraderOneShot._snap_volume(symbol, 1.0, max_lots_cap=0.01)
-
-    assert volume == 1
-    assert lots == 0.01
+    with pytest.raises(RuntimeError, match="minimum volume .* exceeds configured max cap"):
+        CTraderOneShot._snap_volume(symbol, 1.0, max_lots_cap=0.01)
 
 
 def test_index_zero_pip_position_is_valid_one_point_pip() -> None:
     symbol = SimpleNamespace(pipPosition=0)
 
     assert CTraderOneShot._symbol_pip_size(symbol) == 1.0
+
+
+def test_pepperstone_high_min_crypto_is_blocked_before_submission(monkeypatch) -> None:
+    from execution.ctrader_adapter import CTraderAdapter
+
+    monkeypatch.delenv("PEPPERSTONE_CTRADER_EXECUTION_ALLOW_HIGH_MIN_CRYPTO", raising=False)
+    adapter = CTraderAdapter()
+
+    supported, reason = adapter.supports_asset("ETH-USD", "crypto")
+
+    assert supported is False
+    assert "minimum volume is too high" in reason
