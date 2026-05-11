@@ -282,6 +282,25 @@ class CTraderOneShot:
             return parsed
         return response
 
+    def _response_meta(self, response: Any) -> Dict[str, Any]:
+        payload = getattr(response, "payload", None)
+        return {
+            "response_type": type(response).__name__,
+            "payload_type": int(getattr(response, "payloadType", 0) or 0),
+            "payload_bytes": len(payload or b""),
+            "stage": self._stage,
+        }
+
+    def _finish_execution_unknown(self, message: str, *, response: Any = None, **extra: Any) -> None:
+        payload = dict(extra)
+        if response is not None:
+            payload.setdefault("response_meta", self._response_meta(response))
+        self._finish(
+            False,
+            f"ctrader_execution_unknown: {message}; check broker before retrying",
+            **payload,
+        )
+
     def _on_connected(self, client: Client) -> None:
         self._mark_stage("application_auth")
         req = ProtoOAApplicationAuthReq(clientId=self.client_id, clientSecret=self.client_secret)
@@ -893,47 +912,68 @@ class CTraderOneShot:
 
     def _after_execution_event(self, response: Any, *, symbol_id: int = 0, symbol_name: str = "") -> None:
         self._mark_stage("execution_event")
-        parsed = self._parse(response, ProtoOAExecutionEvent)
-        execution_type = int(getattr(parsed, "executionType", 0) or 0)
-        position = getattr(parsed, "position", None)
-        order = getattr(parsed, "order", None)
-        deal = getattr(parsed, "deal", None)
-        error_code = str(getattr(parsed, "errorCode", "") or "")
-        rejected = execution_type in {ProtoOAExecutionType.ORDER_REJECTED, ProtoOAExecutionType.ORDER_CANCEL_REJECTED}
-        if rejected or error_code:
-            self._finish(False, error_code or f"cTrader execution rejected type={execution_type}", raw=_message_to_dict(parsed))
-            return
-        position_id = int(getattr(position, "positionId", 0) or getattr(order, "positionId", 0) or getattr(deal, "positionId", 0) or 0)
-        order_id = int(getattr(order, "orderId", 0) or getattr(deal, "orderId", 0) or 0)
-        deal_id = int(getattr(deal, "dealId", 0) or 0)
-        price = (
-            _safe_float(getattr(deal, "executionPrice", 0.0), 0.0)
-            or _safe_float(getattr(order, "executionPrice", 0.0), 0.0)
-            or _safe_float(getattr(position, "price", 0.0), 0.0)
-        )
-        volume = _safe_int(getattr(deal, "filledVolume", 0) or getattr(deal, "volume", 0) or getattr(order, "executedVolume", 0), 0)
-        if not symbol_id:
-            symbol_id = int(getattr(deal, "symbolId", 0) or 0)
-        broker_sizing = dict(self._last_order_broker_sizing or {})
-        if broker_sizing:
-            broker_sizing["filled_volume"] = volume
-            broker_sizing["filled_lots"] = broker_sizing.get("broker_size")
-        self._finish(
-            True,
-            "execution accepted",
-            execution_type=execution_type,
-            position_id=str(position_id or ""),
-            order_id=str(order_id or ""),
-            deal_id=str(deal_id or ""),
-            avg_price=price,
-            volume=volume,
-            symbol_id=symbol_id,
-            symbol_name=symbol_name,
-            broker_sizing=broker_sizing,
-            account_id=str(self.account_id or ""),
-            environment=self.environment,
-            raw=_message_to_dict(parsed),
-        )
+        try:
+            parsed = self._parse(response, ProtoOAExecutionEvent)
+            execution_type = int(getattr(parsed, "executionType", 0) or 0)
+            position = getattr(parsed, "position", None)
+            order = getattr(parsed, "order", None)
+            deal = getattr(parsed, "deal", None)
+            error_code = str(getattr(parsed, "errorCode", "") or "")
+            rejected = execution_type in {ProtoOAExecutionType.ORDER_REJECTED, ProtoOAExecutionType.ORDER_CANCEL_REJECTED}
+            raw = _message_to_dict(parsed)
+            if rejected or error_code:
+                self._finish(
+                    False,
+                    error_code or f"cTrader execution rejected type={execution_type}",
+                    raw=raw,
+                    response_meta=self._response_meta(response),
+                )
+                return
+            position_id = int(getattr(position, "positionId", 0) or getattr(order, "positionId", 0) or getattr(deal, "positionId", 0) or 0)
+            order_id = int(getattr(order, "orderId", 0) or getattr(deal, "orderId", 0) or 0)
+            deal_id = int(getattr(deal, "dealId", 0) or 0)
+            if self.action == "place_order" and not (position_id or order_id or deal_id):
+                self._finish_execution_unknown(
+                    f"cTrader execution event returned no broker ids for type={execution_type}",
+                    response=response,
+                    execution_type=execution_type,
+                    raw=raw,
+                )
+                return
+            price = (
+                _safe_float(getattr(deal, "executionPrice", 0.0), 0.0)
+                or _safe_float(getattr(order, "executionPrice", 0.0), 0.0)
+                or _safe_float(getattr(position, "price", 0.0), 0.0)
+            )
+            volume = _safe_int(getattr(deal, "filledVolume", 0) or getattr(deal, "volume", 0) or getattr(order, "executedVolume", 0), 0)
+            if not symbol_id:
+                symbol_id = int(getattr(deal, "symbolId", 0) or 0)
+            broker_sizing = dict(self._last_order_broker_sizing or {})
+            if broker_sizing:
+                broker_sizing["filled_volume"] = volume
+                broker_sizing["filled_lots"] = broker_sizing.get("broker_size")
+            self._finish(
+                True,
+                "execution accepted",
+                execution_type=execution_type,
+                position_id=str(position_id or ""),
+                order_id=str(order_id or ""),
+                deal_id=str(deal_id or ""),
+                avg_price=price,
+                volume=volume,
+                symbol_id=symbol_id,
+                symbol_name=symbol_name,
+                broker_sizing=broker_sizing,
+                account_id=str(self.account_id or ""),
+                environment=self.environment,
+                raw=raw,
+                response_meta=self._response_meta(response),
+            )
+        except Exception as exc:
+            self._finish_execution_unknown(
+                f"cTrader execution event callback failed at stage={self._stage}: {exc}",
+                response=response,
+            )
 
     def _on_disconnected(self, _client: Client, reason: Any) -> None:
         if not self._finished:
