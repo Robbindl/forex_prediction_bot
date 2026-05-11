@@ -389,7 +389,7 @@ class CTraderOneShot:
             self._send_reconcile()
         elif self.action == "preflight":
             self._send_preflight()
-        elif self.action == "place_order":
+        elif self.action in {"place_order", "order_preflight"}:
             self._send_place_order()
         elif self.action in {"close_position", "partial_close"}:
             self._send_close_position()
@@ -733,6 +733,20 @@ class CTraderOneShot:
             "gold_profile": gold_profile,
             "target_profile": target_profile,
         }
+        if self.action == "order_preflight":
+            self._finish(
+                True,
+                "order preflight passed",
+                account_id=str(self.account_id or ""),
+                environment=self.environment,
+                broker_name=os.getenv("CTRADER_EXECUTION_BROKER_NAME", "pepperstone"),
+                symbol_id=target_symbol_id,
+                symbol_name=str(self._pending_order.get("symbol_name") or ""),
+                volume=volume,
+                broker_sizing=sizing,
+                would_submit_order=False,
+            )
+            return
         self._submit_market_order(target_symbol_id, str(self._pending_order.get("symbol_name") or ""), volume, broker_sizing=sizing)
 
     def _send_balance(self) -> None:
@@ -790,6 +804,27 @@ class CTraderOneShot:
             self._request_symbol_detail("target", symbol_id)
             return
         volume = max(1, _safe_int(self.payload.get("volume"), 0))
+        if self.action == "order_preflight":
+            self._finish(
+                True,
+                "order preflight passed",
+                account_id=str(self.account_id or ""),
+                environment=self.environment,
+                broker_name=os.getenv("CTRADER_EXECUTION_BROKER_NAME", "pepperstone"),
+                symbol_id=symbol_id,
+                symbol_name=symbol_name,
+                volume=volume,
+                broker_sizing={
+                    "broker": "ctrader",
+                    "broker_name": os.getenv("CTRADER_EXECUTION_BROKER_NAME", "pepperstone"),
+                    "environment": self.environment,
+                    "broker_volume": volume,
+                    "local_position_size": round(volume / 100.0, 8),
+                    "sizing_model": "direct_payload_volume",
+                },
+                would_submit_order=False,
+            )
+            return
         self._submit_market_order(symbol_id, symbol_name, volume)
 
     def _submit_market_order(
