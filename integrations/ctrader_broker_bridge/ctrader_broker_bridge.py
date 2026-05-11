@@ -608,6 +608,59 @@ class CTraderOneShot:
         return int(getattr(symbol, "lotSize", 0) or 0)
 
     @staticmethod
+    def _symbol_price_digits(symbol: Any) -> int:
+        return max(0, int(getattr(symbol, "digits", 0) or 0))
+
+    @staticmethod
+    def _category_for_asset(asset: Any) -> str:
+        canonical = str(asset or "").strip().upper()
+        direct = SUPPORTED_ASSETS.get(canonical)
+        if direct:
+            return str(direct.get("category") or "").lower()
+        normalized = _normalize_name(canonical)
+        for key, meta in SUPPORTED_ASSETS.items():
+            aliases = {key, *(meta.get("aliases") or ())}
+            if normalized in {_normalize_name(item) for item in aliases}:
+                return str(meta.get("category") or "").lower()
+        return ""
+
+    def _max_lots_cap_for_asset(self, asset: Any) -> Tuple[float, str]:
+        base_text = os.getenv("PEPPERSTONE_CTRADER_MAX_LOTS", "").strip() or os.getenv("PEPPERSTONE_CTRADER_LIVE_MAX_LOTS", "1.00")
+        base_cap = max(0.01, _safe_float(base_text, 1.0))
+        category = self._category_for_asset(asset)
+        category_key = category.upper()
+        category_text = ""
+        if category_key:
+            category_text = (
+                os.getenv(f"PEPPERSTONE_CTRADER_MAX_LOTS_{category_key}", "").strip()
+                or os.getenv(f"PEPPERSTONE_CTRADER_LIVE_MAX_LOTS_{category_key}", "").strip()
+            )
+        if category_text:
+            return max(0.01, _safe_float(category_text, base_cap)), f"{category}_env_cap"
+        if category == "crypto":
+            return min(base_cap, 0.01), "crypto_default_cap"
+        return base_cap, "global_cap"
+
+    @staticmethod
+    def _round_price_to_digits(price: Any, digits: int) -> float:
+        value = _safe_float(price, 0.0)
+        if value <= 0.0:
+            return 0.0
+        digits = max(0, int(digits or 0))
+        return float(f"{value:.{digits}f}")
+
+    def _order_price_precision(self, symbol: Any) -> Dict[str, Any]:
+        digits = self._symbol_price_digits(symbol)
+        precision: Dict[str, Any] = {"digits": digits}
+        for key in ("entry_price", "stop_loss", "take_profit"):
+            raw = _safe_float(self.payload.get(key), 0.0)
+            rounded = self._round_price_to_digits(raw, digits)
+            precision[f"raw_{key}"] = raw
+            precision[key] = rounded
+            precision[f"{key}_changed"] = bool(raw > 0.0 and rounded != raw)
+        return precision
+
+    @staticmethod
     def _symbol_volume_to_lots(symbol: Any, volume: int) -> float:
         lot_size = CTraderOneShot._symbol_lot_size_cents(symbol)
         if lot_size <= 0:
@@ -632,8 +685,19 @@ class CTraderOneShot:
         min_volume = int(getattr(symbol, "minVolume", 0) or 0)
         max_volume = int(getattr(symbol, "maxVolume", 0) or 0)
         step_volume = int(getattr(symbol, "stepVolume", 0) or 0)
-        min_lots = max(0.01, min_volume / lot_size if min_volume > 0 else 0.01)
-        max_lots = min(float(max_lots_cap or 1.0), max_volume / lot_size if max_volume > 0 else float(max_lots_cap or 1.0))
+        max_lots_cap = max(0.01, float(max_lots_cap or 1.0))
+        raw_min_lots = min_volume / lot_size if min_volume > 0 else 0.0
+        raw_max_lots = max_volume / lot_size if max_volume > 0 else 0.0
+        if raw_min_lots > max_lots_cap * 1000:
+            min_volume = 0
+            raw_min_lots = 0.0
+        if raw_max_lots > max_lots_cap * 1000:
+            max_volume = 0
+            raw_max_lots = 0.0
+        min_lots = max(0.01, raw_min_lots if raw_min_lots > 0 else 0.01)
+        max_lots = min(max_lots_cap, raw_max_lots if raw_max_lots > 0 else max_lots_cap)
+        if max_lots < min_lots:
+            max_lots = min_lots
         lots = max(min_lots, min(max_lots, float(desired_lots or 0.0)))
         lots = round(round(lots / 0.01) * 0.01, 2)
         volume = int(round(lots * lot_size))
@@ -687,6 +751,56 @@ class CTraderOneShot:
             self._finish(False, f"cTrader symbol spec missing for symbolId={symbol_id}")
             return
         self._pending_specs[label] = symbols[0]
+        if label == "update_stop":
+            position_id = _safe_int(self._pending_order.get("position_id"), 0)
+            raw_stop_loss = _safe_float(self._pending_order.get("stop_loss"), 0.0)
+            digits = self._symbol_price_digits(symbols[0])
+            stop_loss = self._round_price_to_digits(raw_stop_loss, digits)
+            self._last_order_broker_sizing = {
+                "price_precision": {
+                    "digits": digits,
+                    "raw_stop_loss": raw_stop_loss,
+                    "stop_loss": stop_loss,
+                    "stop_loss_changed": bool(raw_stop_loss > 0.0 and stop_loss != raw_stop_loss),
+                }
+            }
+            self._submit_stop_update(position_id, stop_loss)
+            return
+        if label == "direct_order":
+            volume = max(1, _safe_int(self._pending_order.get("volume"), 0))
+            price_precision = self._order_price_precision(symbols[0])
+            broker_sizing = {
+                "broker": "ctrader",
+                "broker_name": os.getenv("CTRADER_EXECUTION_BROKER_NAME", "pepperstone"),
+                "environment": self.environment,
+                "broker_volume": volume,
+                "local_position_size": round(volume / 100.0, 8),
+                "sizing_model": "direct_payload_volume",
+                "price_precision": price_precision,
+            }
+            if self.action == "order_preflight":
+                self._finish(
+                    True,
+                    "order preflight passed",
+                    account_id=str(self.account_id or ""),
+                    environment=self.environment,
+                    broker_name=os.getenv("CTRADER_EXECUTION_BROKER_NAME", "pepperstone"),
+                    symbol_id=symbol_id,
+                    symbol_name=str(self._pending_order.get("symbol_name") or ""),
+                    volume=volume,
+                    broker_sizing=broker_sizing,
+                    price_precision=price_precision,
+                    would_submit_order=False,
+                )
+                return
+            self._submit_market_order(
+                symbol_id,
+                str(self._pending_order.get("symbol_name") or ""),
+                volume,
+                broker_sizing=broker_sizing,
+                symbol_spec=symbols[0],
+            )
+            return
         if label == "target":
             self._request_symbol_detail("gold", int(self._pending_order.get("gold_symbol_id") or 0))
             return
@@ -791,10 +905,20 @@ class CTraderOneShot:
             if desired_lots <= 0.01:
                 desired_lots = 0.01
                 reason = "volatility cap 0.01"
-        max_lots_setting = os.getenv("PEPPERSTONE_CTRADER_MAX_LOTS", "").strip() or os.getenv("PEPPERSTONE_CTRADER_LIVE_MAX_LOTS", "1.00")
-        max_lots_cap = max(0.01, _safe_float(max_lots_setting, 1.0))
+        max_lots_cap, max_lots_source = self._max_lots_cap_for_asset(asset)
         desired_lots = min(max_lots_cap, max(0.01, float(desired_lots or 0.01)))
         volume, broker_lots = self._snap_volume(target_symbol, desired_lots, max_lots_cap=max_lots_cap)
+        target_lot_size = max(1, self._symbol_lot_size_cents(target_symbol))
+        raw_min_lots = int(getattr(target_symbol, "minVolume", 0) or 0) / target_lot_size
+        raw_max_lots = int(getattr(target_symbol, "maxVolume", 0) or 0) / target_lot_size
+        if raw_min_lots > max_lots_cap * 1000:
+            raw_min_lots = 0.0
+        if raw_max_lots > max_lots_cap * 1000:
+            raw_max_lots = 0.0
+        display_min_lots = max(0.01, raw_min_lots if raw_min_lots > 0 else 0.01)
+        display_max_lots = min(max_lots_cap, raw_max_lots if raw_max_lots > 0 else max_lots_cap)
+        if display_max_lots < display_min_lots:
+            display_max_lots = display_min_lots
         sizing = {
             "sizing_model": "pepperstone_ctrader_gold_0_01_pip_parity",
             "broker": "ctrader",
@@ -807,12 +931,16 @@ class CTraderOneShot:
             "target_pip_value_usd_at_0_01_lots": round(target_pip_usd, 8),
             "raw_calculated_lots": round(0.01 * (gold_pip_usd / target_pip_usd), 8),
             "rounded_lots": broker_lots,
-            "min_lots": round(max(0.01, int(getattr(target_symbol, "minVolume", 0) or 0) / max(1, self._symbol_lot_size_cents(target_symbol))), 6),
-            "max_lots": round(min(max_lots_cap, int(getattr(target_symbol, "maxVolume", 0) or 0) / max(1, self._symbol_lot_size_cents(target_symbol))) if int(getattr(target_symbol, "maxVolume", 0) or 0) else max_lots_cap, 6),
+            "min_lots": round(display_min_lots, 6),
+            "max_lots": round(display_max_lots, 6),
+            "max_lots_cap": max_lots_cap,
+            "max_lots_source": max_lots_source,
             "reason": reason,
             "gold_profile": gold_profile,
             "target_profile": target_profile,
         }
+        price_precision = self._order_price_precision(target_symbol)
+        sizing["price_precision"] = price_precision
         if self.action == "order_preflight":
             self._finish(
                 True,
@@ -824,10 +952,17 @@ class CTraderOneShot:
                 symbol_name=str(self._pending_order.get("symbol_name") or ""),
                 volume=volume,
                 broker_sizing=sizing,
+                price_precision=price_precision,
                 would_submit_order=False,
             )
             return
-        self._submit_market_order(target_symbol_id, str(self._pending_order.get("symbol_name") or ""), volume, broker_sizing=sizing)
+        self._submit_market_order(
+            target_symbol_id,
+            str(self._pending_order.get("symbol_name") or ""),
+            volume,
+            broker_sizing=sizing,
+            symbol_spec=target_symbol,
+        )
 
     def _send_balance(self) -> None:
         assert self.client is not None and self.account_id is not None
@@ -884,28 +1019,14 @@ class CTraderOneShot:
             self._request_symbol_detail("target", symbol_id)
             return
         volume = max(1, _safe_int(self.payload.get("volume"), 0))
-        if self.action == "order_preflight":
-            self._finish(
-                True,
-                "order preflight passed",
-                account_id=str(self.account_id or ""),
-                environment=self.environment,
-                broker_name=os.getenv("CTRADER_EXECUTION_BROKER_NAME", "pepperstone"),
-                symbol_id=symbol_id,
-                symbol_name=symbol_name,
-                volume=volume,
-                broker_sizing={
-                    "broker": "ctrader",
-                    "broker_name": os.getenv("CTRADER_EXECUTION_BROKER_NAME", "pepperstone"),
-                    "environment": self.environment,
-                    "broker_volume": volume,
-                    "local_position_size": round(volume / 100.0, 8),
-                    "sizing_model": "direct_payload_volume",
-                },
-                would_submit_order=False,
-            )
-            return
-        self._submit_market_order(symbol_id, symbol_name, volume)
+        self._pending_order = {
+            "asset": asset,
+            "symbol_id": symbol_id,
+            "symbol_name": symbol_name,
+            "volume": volume,
+        }
+        self._pending_specs = {}
+        self._request_symbol_detail("direct_order", symbol_id)
 
     def _submit_market_order(
         self,
@@ -914,6 +1035,7 @@ class CTraderOneShot:
         volume: int,
         *,
         broker_sizing: Optional[Dict[str, Any]] = None,
+        symbol_spec: Any = None,
     ) -> None:
         assert self.client is not None and self.account_id is not None
         side = str(self.payload.get("side") or "BUY").upper()
@@ -932,6 +1054,11 @@ class CTraderOneShot:
         }
         stop_loss = _safe_float(self.payload.get("stop_loss"), 0.0)
         take_profit = _safe_float(self.payload.get("take_profit"), 0.0)
+        if symbol_spec is not None:
+            price_precision = self._order_price_precision(symbol_spec)
+            stop_loss = float(price_precision.get("stop_loss") or 0.0)
+            take_profit = float(price_precision.get("take_profit") or 0.0)
+            self._last_order_broker_sizing["price_precision"] = price_precision
         if stop_loss > 0:
             req_kwargs["stopLoss"] = stop_loss
         if take_profit > 0:
@@ -963,6 +1090,28 @@ class CTraderOneShot:
         self._last_order_broker_sizing = None
         position_id = _safe_int(self.payload.get("position_id") or self.payload.get("broker_trade_id") or self.payload.get("trade_id"), 0)
         stop_loss = _safe_float(self.payload.get("stop_loss"), 0.0)
+        if position_id <= 0 or stop_loss <= 0:
+            self._finish(False, "cTrader position id or stop level missing for stop update")
+            return
+        asset = self.payload.get("asset") or self.payload.get("symbol") or ""
+        if asset:
+            try:
+                symbol_id, symbol_name = self._resolve_symbol(asset, self.payload.get("symbol"))
+                self._pending_order = {
+                    "position_id": position_id,
+                    "stop_loss": stop_loss,
+                    "symbol_id": symbol_id,
+                    "symbol_name": symbol_name,
+                }
+                self._pending_specs = {}
+                self._request_symbol_detail("update_stop", symbol_id)
+                return
+            except Exception as exc:
+                _stderr(f"cTrader stop update precision lookup failed for {asset}: {exc}")
+        self._submit_stop_update(position_id, stop_loss)
+
+    def _submit_stop_update(self, position_id: int, stop_loss: float) -> None:
+        assert self.client is not None and self.account_id is not None
         if position_id <= 0 or stop_loss <= 0:
             self._finish(False, "cTrader position id or stop level missing for stop update")
             return

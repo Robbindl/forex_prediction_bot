@@ -441,6 +441,9 @@ class CTraderAdapter(ExchangeAdapter):
             {
                 "position_id": position_id,
                 "trade_id": position.get("trade_id"),
+                "asset": position.get("asset") or position.get("symbol") or position.get("broker_symbol"),
+                "symbol": position.get("broker_symbol") or position.get("asset") or position.get("symbol"),
+                "category": position.get("category"),
                 "stop_loss": float(stop_level or 0.0),
                 "reason": reason,
             },
