@@ -540,7 +540,7 @@ html,body{height:100%;background:var(--bg);color:var(--tx);font-family:var(--fon
   </div>
 </div>
 
-<script src="/static/dashboard_auth.js?v=20260502c"></script>
+<script src="/static/dashboard_auth.js?v=20260511a"></script>
 <script>
 setInterval(()=>{document.getElementById('clock').textContent=new Date(Date.now()+3*3600000).toUTCString().substring(17,25)+' EAT';},1000);
 
@@ -1256,8 +1256,8 @@ async function fetchCommandCenterOverview(){
     let lastError = '';
     try{
       const endpoints = [
-        {url:'/api/page-overview?page=command_center&days=30', timeoutMs: 15000},
         {url:'/api/command-center', timeoutMs: 15000},
+        {url:'/api/page-overview?page=command_center&days=30', timeoutMs: 15000},
       ];
       for(const endpoint of endpoints){
         const response = await fetchProtectedJson(endpoint.url, {timeoutMs: endpoint.timeoutMs});

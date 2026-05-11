@@ -4247,7 +4247,10 @@ def api_system_status():
 # API — COMMAND CENTER
 # ══════════════════════════════════════════════════════════════════════════════
 
-def _load_dashboard_db_runtime_snapshot() -> Tuple[Dict[str, Any], Dict[str, Any], List[Dict[str, Any]], Dict[str, Any], List[Dict[str, Any]]]:
+def _load_dashboard_db_runtime_snapshot(
+    *,
+    allow_db: bool = True,
+) -> Tuple[Dict[str, Any], Dict[str, Any], List[Dict[str, Any]], Dict[str, Any], List[Dict[str, Any]]]:
     cache_key = "db_runtime_snapshot:v2"
     cached = _cache_get(cache_key)
     if isinstance(cached, dict):
@@ -4272,6 +4275,8 @@ def _load_dashboard_db_runtime_snapshot() -> Tuple[Dict[str, Any], Dict[str, Any
         "strategy_mode": "split-dashboard" if external_bot_running else "standalone-dashboard",
     }
     closed_trades: List[Dict[str, Any]] = []
+    if not allow_db:
+        return perf, daily, positions, health, closed_trades
     try:
         from services.db_pool import get_db
 
@@ -4330,7 +4335,11 @@ def _load_dashboard_db_runtime_snapshot() -> Tuple[Dict[str, Any], Dict[str, Any
     return perf, daily, positions, health, closed_trades
 
 
-def _command_center_core_snapshot(core: Any) -> Tuple[Dict[str, Any], Dict[str, Any], List[Dict[str, Any]], Dict[str, Any], List[Dict[str, Any]]]:
+def _command_center_core_snapshot(
+    core: Any,
+    *,
+    allow_db: bool = True,
+) -> Tuple[Dict[str, Any], Dict[str, Any], List[Dict[str, Any]], Dict[str, Any], List[Dict[str, Any]]]:
     perf: Dict[str, Any] = {}
     daily: Dict[str, Any] = {}
     positions: List[Dict[str, Any]] = []
@@ -4378,7 +4387,7 @@ def _command_center_core_snapshot(core: Any) -> Tuple[Dict[str, Any], Dict[str, 
                 "daily_trades": int(closed_summary.get("daily_trades", 0) or 0),
             })
     else:
-        perf, daily, positions, health, closed_trades = _load_dashboard_db_runtime_snapshot()
+        perf, daily, positions, health, closed_trades = _load_dashboard_db_runtime_snapshot(allow_db=allow_db)
     return perf, daily, positions, health, closed_trades
 
 
@@ -4423,7 +4432,7 @@ def _build_command_center_unavailable_payload(*, reason: str = "unavailable") ->
     )
     recent = list(whale_context.get("recent") or cached_slow.get("recent") or [])
     core = _core()
-    perf, daily, positions, health, closed_trades = _command_center_core_snapshot(core)
+    perf, daily, positions, health, closed_trades = _command_center_core_snapshot(core, allow_db=False)
     live_summary = _build_command_center_live_summary(perf, daily, positions)
     payload = {
         "success": True,
@@ -10048,11 +10057,17 @@ def _page_overview_base(page: str, days: int, *, reason: str) -> Dict[str, Any]:
     }
 
 
-def _build_page_overview_unavailable_payload(page: str, days: int, reason: str = "overview_unavailable") -> Dict[str, Any]:
+def _build_page_overview_unavailable_payload(
+    page: str,
+    days: int,
+    reason: str = "overview_unavailable",
+    *,
+    allow_db: bool = False,
+) -> Dict[str, Any]:
     status = _page_overview_status_shell()
     command_center = _page_overview_command_center_shell(reason)
     payload = _page_overview_base(page, days, reason=reason)
-    payload["trade_history_summary"] = _page_overview_trade_history_summary(limit=50)
+    payload["trade_history_summary"] = _page_overview_trade_history_summary(limit=50, allow_db=allow_db)
 
     if page == "risk_dashboard":
         payload.update({"status": status, "risk": {"success": True}, "command_center": command_center})
@@ -10219,12 +10234,14 @@ def _page_overview_view_component(
     )
 
 
-def _page_overview_trade_history_summary(*, limit: int = 50) -> Dict[str, Any]:
+def _page_overview_trade_history_summary(*, limit: int = 50, allow_db: bool = True) -> Dict[str, Any]:
     target = max(1, int(limit or 50))
     cache_key = f"page_component:v4:trade_history_summary:{target}"
     cached = _cache_get(cache_key)
     if cached is not None:
         return dict(cached) if isinstance(cached, dict) else {}
+    if not allow_db:
+        return {}
     raw_limit = max(target * 3, target + 10)
     trades = _rollup_closed_trades_for_dashboard(_load_authoritative_closed_trades(limit=raw_limit), limit=target)
     summary = _build_authoritative_trade_history_summary(trades)
@@ -10238,7 +10255,7 @@ def _build_page_overview_payload(page: str, days: int, *, force_refresh: bool = 
     def _command_center_snapshot() -> Dict[str, Any]:
         return _page_overview_command_center_shell("page_overview_cache_miss")
 
-    fallback_payload = _build_page_overview_unavailable_payload(page, days, reason="component_warming")
+    fallback_payload = _build_page_overview_unavailable_payload(page, days, reason="component_warming", allow_db=False)
 
     if page == "risk_dashboard":
         payload = {
@@ -10460,15 +10477,6 @@ def _get_cached_page_overview_payload(page: str, days: int, *, force_refresh: bo
 
         fallback = _cache_get(last_good_key)
         if fallback is not None:
-            try:
-                payload = _normalize_page_overview_payload_contract(_builder(), page, days)
-                ttl = _PAGE_OVERVIEW_DEGRADED_CACHE_TTL if _is_degraded_dashboard_payload(payload) else _PAGE_OVERVIEW_CACHE_TTL
-                _cache_set(cache_key, payload, ttl=ttl)
-                if not _is_degraded_dashboard_payload(payload):
-                    _cache_set(last_good_key, payload, ttl=_PAGE_OVERVIEW_LAST_GOOD_TTL)
-                    return payload
-            except Exception as exc:
-                logger.debug(f"[dashboard] page overview stale refresh failed for {page}: {exc}")
             _trigger_dashboard_payload_refresh(
                 cache_key,
                 builder=_builder,
@@ -10483,28 +10491,19 @@ def _get_cached_page_overview_payload(page: str, days: int, *, force_refresh: bo
                 days,
             )
 
-        try:
-            payload = _normalize_page_overview_payload_contract(_builder(), page, days)
-            ttl = _PAGE_OVERVIEW_DEGRADED_CACHE_TTL if _is_degraded_dashboard_payload(payload) else _PAGE_OVERVIEW_CACHE_TTL
-            _cache_set(cache_key, payload, ttl=ttl)
-            if not _is_degraded_dashboard_payload(payload):
-                _cache_set(last_good_key, payload, ttl=_PAGE_OVERVIEW_LAST_GOOD_TTL)
-            return payload
-        except Exception as exc:
-            logger.debug(f"[dashboard] page overview first build failed for {page}: {exc}")
-            _trigger_dashboard_payload_refresh(
-                cache_key,
-                builder=_builder,
-                cache_key=cache_key,
-                ttl=_PAGE_OVERVIEW_CACHE_TTL,
-                last_good_key=last_good_key,
-                last_good_ttl=_PAGE_OVERVIEW_LAST_GOOD_TTL,
-            )
-            payload = _build_page_overview_unavailable_payload(page, days, reason="page_overview_warming")
-            payload["degraded"] = True
-            payload["degraded_reason"] = "page_overview_warming"
-            _cache_set(cache_key, payload, ttl=_PAGE_OVERVIEW_DEGRADED_CACHE_TTL)
-            return _normalize_page_overview_payload_contract(payload, page, days)
+        _trigger_dashboard_payload_refresh(
+            cache_key,
+            builder=_builder,
+            cache_key=cache_key,
+            ttl=_PAGE_OVERVIEW_CACHE_TTL,
+            last_good_key=last_good_key,
+            last_good_ttl=_PAGE_OVERVIEW_LAST_GOOD_TTL,
+        )
+        payload = _build_page_overview_unavailable_payload(page, days, reason="page_overview_warming", allow_db=False)
+        payload["degraded"] = True
+        payload["degraded_reason"] = "page_overview_warming"
+        _cache_set(cache_key, payload, ttl=_PAGE_OVERVIEW_DEGRADED_CACHE_TTL)
+        return _normalize_page_overview_payload_contract(payload, page, days)
 
     try:
         payload = _normalize_page_overview_payload_contract(_builder(), page, days)
