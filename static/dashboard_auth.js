@@ -737,7 +737,7 @@
     const url = toUrl(input);
     if (!url) return String(input || '');
     if (isProtectedApiRequest(url.toString())) {
-      const token = await ensureApiToken(!!forceRefresh);
+      const token = await ensureApiToken(!!forceRefresh || !!getStoredApiKey());
       if (token) {
         url.searchParams.set('token', token);
       }
