@@ -171,6 +171,43 @@ def test_ctrader_close_uses_exact_broker_volume(monkeypatch) -> None:
     assert captured["payload"]["volume"] == 5000
 
 
+def test_ctrader_partial_close_snaps_to_saved_volume_step() -> None:
+    from execution.ctrader_adapter import CTraderAdapter
+
+    position = {
+        "position_size": 71.43,
+        "broker_volume": 7143,
+        "metadata": {
+            "broker_execution": {
+                "broker_sizing": {
+                    "broker_volume": 7143,
+                    "volume_step": 50,
+                }
+            }
+        },
+    }
+
+    volume = CTraderAdapter._close_volume_for_local_size(position, 21.43)
+
+    assert volume == 2100
+    assert volume % 50 == 0
+
+
+def test_ctrader_bridge_close_volume_snaps_to_symbol_step() -> None:
+    symbol = SimpleNamespace(stepVolume=50)
+
+    close_volume, meta = CTraderOneShot._snap_close_volume_to_step(
+        symbol,
+        21.43,
+        live_position_volume=7143,
+    )
+
+    assert close_volume == 50
+    assert close_volume % 50 == 0
+    assert meta["requested_volume"] == 21
+    assert meta["adjusted"] is True
+
+
 def test_ctrader_ambiguous_close_reconciles_when_position_missing(monkeypatch) -> None:
     from execution.ctrader_adapter import CTraderAdapter
 

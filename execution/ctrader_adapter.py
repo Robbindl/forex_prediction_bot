@@ -300,9 +300,48 @@ class CTraderAdapter(ExchangeAdapter):
         return 0
 
     @classmethod
+    def _extract_broker_volume_step(cls, position: Dict[str, Any]) -> int:
+        if not isinstance(position, dict):
+            return 0
+        metadata = position.get("metadata") if isinstance(position.get("metadata"), dict) else {}
+        broker_execution = metadata.get("broker_execution") if isinstance(metadata.get("broker_execution"), dict) else {}
+        broker_sizing = broker_execution.get("broker_sizing") if isinstance(broker_execution.get("broker_sizing"), dict) else {}
+        candidates = (
+            position.get("broker_volume_step"),
+            broker_execution.get("volume_step"),
+            broker_execution.get("step_volume"),
+            broker_sizing.get("volume_step"),
+            broker_sizing.get("step_volume"),
+        )
+        for candidate in candidates:
+            value = cls._int_or_zero(candidate)
+            if value > 0:
+                return value
+        return 0
+
+    @staticmethod
+    def _snap_partial_close_volume(volume: int, *, broker_volume_total: int, step: int, is_full_close: bool) -> int:
+        volume = max(1, int(volume or 0))
+        broker_volume_total = max(0, int(broker_volume_total or 0))
+        step = max(0, int(step or 0))
+        if broker_volume_total > 0 and (is_full_close or volume >= broker_volume_total):
+            return broker_volume_total
+        if step <= 1:
+            return min(volume, broker_volume_total) if broker_volume_total > 0 else volume
+        snapped = int(volume // step) * step
+        if snapped <= 0:
+            snapped = step
+        if broker_volume_total > 0:
+            snapped = min(snapped, broker_volume_total)
+            if snapped >= broker_volume_total and not is_full_close and broker_volume_total > step:
+                snapped = max(step, int((broker_volume_total - 1) // step) * step)
+        return max(1, snapped)
+
+    @classmethod
     def _close_volume_for_local_size(cls, position: Dict[str, Any], local_close_size: float) -> int:
         local_close_size = max(0.0, float(local_close_size or 0.0))
         broker_volume_total = cls._extract_broker_volume(position)
+        step = cls._extract_broker_volume_step(position)
         current_local_size = max(0.0, float(position.get("position_size") or 0.0))
         is_full_close = current_local_size <= 0.0 or local_close_size >= max(0.0, current_local_size - 1e-9)
         if broker_volume_total > 0:
@@ -311,10 +350,23 @@ class CTraderAdapter(ExchangeAdapter):
             if current_local_size > 0.0:
                 requested_ratio = max(0.0, min(1.0, local_close_size / current_local_size))
                 volume = max(1, int(round(broker_volume_total * requested_ratio)))
-                if volume >= broker_volume_total:
-                    volume = max(1, broker_volume_total - 1)
-                return volume
-        return cls._local_size_to_volume(local_close_size)
+                return cls._snap_partial_close_volume(
+                    volume,
+                    broker_volume_total=broker_volume_total,
+                    step=step,
+                    is_full_close=False,
+                )
+        volume = cls._local_size_to_volume(local_close_size)
+        return cls._snap_partial_close_volume(volume, broker_volume_total=0, step=step, is_full_close=is_full_close)
+
+    def _actual_local_close_size(self, position: Dict[str, Any], requested_local_close_size: float, close_volume: int) -> float:
+        requested_local_close_size = max(0.0, float(requested_local_close_size or 0.0))
+        broker_volume_total = self._extract_broker_volume(position)
+        current_local_size = max(0.0, float(position.get("position_size") or 0.0))
+        close_volume = max(0, int(close_volume or 0))
+        if broker_volume_total > 0 and current_local_size > 0.0 and close_volume > 0:
+            return min(current_local_size, round(current_local_size * close_volume / float(broker_volume_total), 8))
+        return requested_local_close_size
 
     @staticmethod
     def _live_position_volume(raw_position: Dict[str, Any]) -> int:
@@ -582,7 +634,10 @@ class CTraderAdapter(ExchangeAdapter):
             {
                 "position_id": position_id,
                 "trade_id": position.get("trade_id"),
+                "asset": position.get("asset"),
+                "symbol": position.get("broker_symbol") or position.get("asset"),
                 "volume": volume,
+                "broker_volume": self._extract_broker_volume(position),
                 "local_close_size": local_close_size,
                 "reason": reason,
             },
@@ -598,15 +653,18 @@ class CTraderAdapter(ExchangeAdapter):
                 return reconciled
             return OrderResult(order_id=position_id, status="FAILED", error=str(result.get("error") or result), raw=result)
         avg_price = float(result.get("avg_price") or position.get("current_price") or position.get("entry_price") or 0.0)
+        broker_close_volume = int(float(result.get("close_volume") or result.get("volume") or volume or 0))
+        actual_local_close_size = self._actual_local_close_size(position, local_close_size, broker_close_volume)
         return OrderResult(
             order_id=position_id,
             status="FILLED",
-            filled_qty=local_close_size,
+            filled_qty=actual_local_close_size,
             avg_price=avg_price,
             raw={
                 **result,
-                "broker_close_size": local_close_size,
-                "broker_close_volume": volume,
+                "broker_close_size": actual_local_close_size,
+                "broker_close_volume": broker_close_volume,
+                "requested_broker_close_volume": volume,
             },
         )
 

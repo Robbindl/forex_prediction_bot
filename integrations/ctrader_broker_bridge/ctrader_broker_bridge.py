@@ -780,6 +780,53 @@ class CTraderOneShot:
         return round(float(volume or 0) / float(lot_size), 6)
 
     @staticmethod
+    def _snap_close_volume_to_step(
+        symbol: Any,
+        requested_volume: Any,
+        *,
+        live_position_volume: Any = 0,
+        full_close: bool = False,
+    ) -> Tuple[int, Dict[str, Any]]:
+        requested = max(1, int(round(_safe_float(requested_volume, 0.0))))
+        live_volume = max(0, int(round(_safe_float(live_position_volume, 0.0))))
+        step_volume = int(getattr(symbol, "stepVolume", 0) or 0)
+        if live_volume > 0 and (full_close or requested >= live_volume):
+            return live_volume, {
+                "requested_volume": requested,
+                "close_volume": live_volume,
+                "live_position_volume": live_volume,
+                "volume_step": step_volume,
+                "adjusted": bool(live_volume != requested),
+                "reason": "full_position_close",
+            }
+        if step_volume <= 1:
+            close_volume = min(requested, live_volume) if live_volume > 0 else requested
+            return close_volume, {
+                "requested_volume": requested,
+                "close_volume": close_volume,
+                "live_position_volume": live_volume,
+                "volume_step": step_volume,
+                "adjusted": bool(close_volume != requested),
+                "reason": "no_step_constraint",
+            }
+        close_volume = int(requested // step_volume) * step_volume
+        if close_volume <= 0:
+            close_volume = step_volume
+        if live_volume > 0:
+            close_volume = min(close_volume, live_volume)
+            if close_volume >= live_volume and not full_close and live_volume > step_volume:
+                close_volume = max(step_volume, int((live_volume - 1) // step_volume) * step_volume)
+        close_volume = max(1, close_volume)
+        return close_volume, {
+            "requested_volume": requested,
+            "close_volume": close_volume,
+            "live_position_volume": live_volume,
+            "volume_step": step_volume,
+            "adjusted": bool(close_volume != requested),
+            "reason": "snapped_to_symbol_volume_step",
+        }
+
+    @staticmethod
     def _price_from_spot(symbol: Any, bid: Any, ask: Any) -> float:
         digits = int(getattr(symbol, "digits", 0) or 0)
         divisor = 10 ** max(0, digits)
@@ -925,6 +972,19 @@ class CTraderOneShot:
             }
             self._submit_stop_update(position_id, stop_loss)
             return
+        if label == "close_position":
+            position_id = _safe_int(self._pending_order.get("position_id"), 0)
+            requested_volume = self._pending_order.get("requested_volume")
+            live_position_volume = self._pending_order.get("live_position_volume")
+            close_volume, close_precision = self._snap_close_volume_to_step(
+                symbols[0],
+                requested_volume,
+                live_position_volume=live_position_volume,
+                full_close=self.action == "close_position",
+            )
+            self._last_order_broker_sizing = {"close_volume_precision": close_precision}
+            self._submit_close_position(position_id, close_volume, close_precision=close_precision)
+            return
         if label == "direct_order":
             volume = max(1, _safe_int(self._pending_order.get("volume"), 0))
             price_precision = self._order_price_precision(symbols[0])
@@ -933,6 +993,9 @@ class CTraderOneShot:
                 "broker_name": os.getenv("CTRADER_EXECUTION_BROKER_NAME", "pepperstone"),
                 "environment": self.environment,
                 "broker_volume": volume,
+                "volume_step": int(getattr(symbols[0], "stepVolume", 0) or 0),
+                "min_volume": int(getattr(symbols[0], "minVolume", 0) or 0),
+                "max_volume": int(getattr(symbols[0], "maxVolume", 0) or 0),
                 "local_position_size": round(volume / 100.0, 8),
                 "sizing_model": "direct_payload_volume",
                 "price_precision": price_precision,
@@ -1104,6 +1167,9 @@ class CTraderOneShot:
             "environment": self.environment,
             "broker_size": broker_lots,
             "broker_volume": volume,
+            "volume_step": int(getattr(target_symbol, "stepVolume", 0) or 0),
+            "min_volume": int(getattr(target_symbol, "minVolume", 0) or 0),
+            "max_volume": int(getattr(target_symbol, "maxVolume", 0) or 0),
             "local_position_size": round(volume / 100.0, 8),
             "gold_pip_value_usd_at_0_01_lots": round(gold_pip_usd, 8),
             "target_pip_value_usd_at_0_01_lots": round(target_pip_usd, 8),
@@ -1285,14 +1351,51 @@ class CTraderOneShot:
         self._mark_stage("close_position_submit")
         self._last_order_broker_sizing = None
         position_id = _safe_int(self.payload.get("position_id") or self.payload.get("broker_trade_id") or self.payload.get("trade_id"), 0)
-        volume = max(1, _safe_int(self.payload.get("volume"), 0))
+        volume = max(1, int(round(_safe_float(self.payload.get("volume"), 0.0))))
         if position_id <= 0:
             self._finish(False, "cTrader position id missing for close")
             return
+        symbol = self.payload.get("symbol") or self.payload.get("asset") or ""
+        asset = self.payload.get("asset") or symbol
+        if symbol or asset:
+            try:
+                symbol_id, symbol_name = self._resolve_symbol(asset or symbol, symbol)
+                self._pending_order = {
+                    "position_id": position_id,
+                    "requested_volume": volume,
+                    "live_position_volume": self.payload.get("broker_volume") or 0,
+                    "symbol_id": symbol_id,
+                    "symbol_name": symbol_name,
+                }
+                self._pending_specs = {}
+                self._request_symbol_detail("close_position", symbol_id)
+                return
+            except Exception as exc:
+                _stderr(f"cTrader close volume-step lookup failed for {asset}: {exc}")
+        self._submit_close_position(position_id, volume)
+
+    def _submit_close_position(
+        self,
+        position_id: int,
+        volume: int,
+        *,
+        close_precision: Optional[Dict[str, Any]] = None,
+    ) -> None:
+        assert self.client is not None and self.account_id is not None
+        if position_id <= 0 or volume <= 0:
+            self._finish(False, "cTrader position id or close volume missing for close")
+            return
         self._order_request_sent = True
         self.client.send(
-            ProtoOAClosePositionReq(ctidTraderAccountId=self.account_id, positionId=position_id, volume=volume)
-        ).addCallbacks(self._after_execution_event, self._fatal)
+            ProtoOAClosePositionReq(ctidTraderAccountId=self.account_id, positionId=position_id, volume=int(volume))
+        ).addCallbacks(
+            lambda response: self._after_execution_event(
+                response,
+                symbol_id=_safe_int((close_precision or {}).get("symbol_id"), 0),
+                symbol_name=str((close_precision or {}).get("symbol_name") or ""),
+            ),
+            self._fatal,
+        )
 
     def _send_update_stop(self) -> None:
         assert self.client is not None and self.account_id is not None
@@ -1387,6 +1490,7 @@ class CTraderOneShot:
             if broker_sizing:
                 broker_sizing["filled_volume"] = volume
                 broker_sizing["filled_lots"] = broker_sizing.get("broker_size")
+            close_precision = broker_sizing.get("close_volume_precision") if isinstance(broker_sizing.get("close_volume_precision"), dict) else {}
             finish_payload = {
                 "execution_type": execution_type,
                 "position_id": str(position_id or ""),
@@ -1394,6 +1498,9 @@ class CTraderOneShot:
                 "deal_id": str(deal_id or ""),
                 "avg_price": price,
                 "volume": volume,
+                "close_volume": close_precision.get("close_volume") if close_precision else volume,
+                "requested_close_volume": close_precision.get("requested_volume") if close_precision else 0,
+                "volume_step": close_precision.get("volume_step") if close_precision else 0,
                 "symbol_id": symbol_id,
                 "symbol_name": symbol_name,
                 "broker_sizing": broker_sizing,
