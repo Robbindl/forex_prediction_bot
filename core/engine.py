@@ -30,6 +30,7 @@ from config.config import (
     BROKER_MAX_NEW_TRADES_PER_CYCLE,
     BROKER_MAX_OPEN_POSITIONS,
     BROKER_MAX_OPEN_POSITIONS_PER_CATEGORY,
+    BROKER_MAX_OPEN_POSITION_LOSS_PCT,
     BROKER_MAX_SAME_DIRECTION_POSITIONS,
     BROKER_MIN_EXECUTION_ALIGNMENT,
     BROKER_MIN_EXECUTION_CONFIDENCE,
@@ -3309,25 +3310,47 @@ class TradingCore:
             ),
         )
         loss_limit = round(balance * (threshold_pct / 100.0), 2)
+        position_threshold_pct = max(
+            0.1,
+            self._broker_env_float(
+                "BROKER_MAX_OPEN_POSITION_LOSS_PCT",
+                float(BROKER_MAX_OPEN_POSITION_LOSS_PCT),
+            ),
+        )
+        position_loss_limit = round(balance * (position_threshold_pct / 100.0), 2)
+        worst_position = min(
+            broker_positions,
+            key=lambda item: self._float_or_zero(item.get("pnl")),
+            default={},
+        )
+        worst_position_pnl = self._float_or_zero(worst_position.get("pnl"))
+        position_triggered = bool(worst_position and worst_position_pnl <= -abs(position_loss_limit))
+        portfolio_triggered = bool(
+            broker_positions
+            and len(losing) >= max(
+                1,
+                self._broker_env_int(
+                    "BROKER_PORTFOLIO_MIN_LOSING_POSITIONS",
+                    int(BROKER_PORTFOLIO_MIN_LOSING_POSITIONS),
+                ),
+            )
+            and total_pnl <= -abs(loss_limit)
+        )
         return {
             "positions": broker_positions,
+            "positions_to_close": [worst_position] if position_triggered else broker_positions,
             "total_pnl": total_pnl,
             "losing_count": len(losing),
             "open_count": len(broker_positions),
             "balance": balance,
             "threshold_pct": threshold_pct,
             "loss_limit": loss_limit,
-            "triggered": bool(
-                broker_positions
-                and len(losing) >= max(
-                    1,
-                    self._broker_env_int(
-                        "BROKER_PORTFOLIO_MIN_LOSING_POSITIONS",
-                        int(BROKER_PORTFOLIO_MIN_LOSING_POSITIONS),
-                    ),
-                )
-                and total_pnl <= -abs(loss_limit)
-            ),
+            "position_threshold_pct": position_threshold_pct,
+            "position_loss_limit": position_loss_limit,
+            "worst_position_asset": str(worst_position.get("asset") or ""),
+            "worst_position_pnl": round(worst_position_pnl, 2),
+            "trigger_reason": "position_loss_limit" if position_triggered else "portfolio_loss_limit" if portfolio_triggered else "",
+            "triggered": bool(position_triggered or portfolio_triggered),
         }
 
     def _set_broker_portfolio_cooldown(self, minutes: float, reason: str) -> None:
@@ -3347,7 +3370,7 @@ class TradingCore:
     def _trigger_broker_portfolio_emergency_flatten(self, snapshot: Dict[str, Any]) -> bool:
         if self._broker_portfolio_flatten_active:
             return False
-        positions = list(snapshot.get("positions") or [])
+        positions = list(snapshot.get("positions_to_close") or snapshot.get("positions") or [])
         if not positions:
             return False
         self._broker_portfolio_flatten_active = True
@@ -3356,13 +3379,22 @@ class TradingCore:
             self._broker_env_float("BROKER_PORTFOLIO_COOLDOWN_MINUTES", float(BROKER_PORTFOLIO_COOLDOWN_MINUTES)),
         )
         provider_label = self.active_execution_broker().upper()
-        reason = (
-            f"{provider_label} Portfolio Emergency Flatten: floating P/L "
-            f"{float(snapshot.get('total_pnl', 0.0) or 0.0):.2f} breached "
-            f"-{float(snapshot.get('loss_limit', 0.0) or 0.0):.2f} "
-            f"({float(snapshot.get('threshold_pct', 0.0) or 0.0):.2f}%) "
-            f"with {int(snapshot.get('losing_count', 0) or 0)} losing positions"
-        )
+        if str(snapshot.get("trigger_reason") or "") == "position_loss_limit":
+            reason = (
+                f"{provider_label} Max Open Position Loss Guard: "
+                f"{snapshot.get('worst_position_asset') or 'position'} floating P/L "
+                f"{float(snapshot.get('worst_position_pnl', 0.0) or 0.0):.2f} breached "
+                f"-{float(snapshot.get('position_loss_limit', 0.0) or 0.0):.2f} "
+                f"({float(snapshot.get('position_threshold_pct', 0.0) or 0.0):.2f}%)"
+            )
+        else:
+            reason = (
+                f"{provider_label} Portfolio Emergency Flatten: floating P/L "
+                f"{float(snapshot.get('total_pnl', 0.0) or 0.0):.2f} breached "
+                f"-{float(snapshot.get('loss_limit', 0.0) or 0.0):.2f} "
+                f"({float(snapshot.get('threshold_pct', 0.0) or 0.0):.2f}%) "
+                f"with {int(snapshot.get('losing_count', 0) or 0)} losing positions"
+            )
         logger.error(f"[TradingCore] {reason}")
         closed = 0
         skipped = 0

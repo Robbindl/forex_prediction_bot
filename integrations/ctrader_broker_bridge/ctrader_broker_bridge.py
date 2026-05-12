@@ -40,6 +40,7 @@ from ctrader_open_api.messages.OpenApiModelMessages_pb2 import (
     ProtoOAOrderType,
     ProtoOATimeInForce,
     ProtoOATradeSide,
+    ProtoOATradingMode,
 )
 from twisted.internet import reactor
 
@@ -75,6 +76,13 @@ SUPPORTED_ASSETS: Dict[str, Dict[str, Any]] = {
 PEPPERSTONE_CRYPTO_ALT_BASES = {
     "BTC-USD": "BTC",
     "ETH-USD": "ETH",
+}
+
+TRADING_MODE_LABELS = {
+    int(ProtoOATradingMode.ENABLED): "ENABLED",
+    int(ProtoOATradingMode.DISABLED_WITHOUT_PENDINGS_EXECUTION): "DISABLED_WITHOUT_PENDINGS_EXECUTION",
+    int(ProtoOATradingMode.DISABLED_WITH_PENDINGS_EXECUTION): "DISABLED_WITH_PENDINGS_EXECUTION",
+    int(ProtoOATradingMode.CLOSE_ONLY_MODE): "CLOSE_ONLY_MODE",
 }
 
 
@@ -536,28 +544,39 @@ class CTraderOneShot:
         )
         return [item.strip().upper() for item in raw.replace(";", ",").split(",") if item.strip()]
 
-    def _resolve_pepperstone_crypto_alt(self, asset: Any) -> Optional[Dict[str, Any]]:
+    def _pepperstone_crypto_alt_candidates(self, asset: Any) -> List[Dict[str, Any]]:
         if _broker_key(os.getenv("CTRADER_EXECUTION_BROKER_NAME", "")) != "pepperstone":
-            return None
+            return []
         canonical = self._canonical_supported_asset(asset)
         base = PEPPERSTONE_CRYPTO_ALT_BASES.get(canonical)
         if not base:
-            return None
+            return []
+        candidates: List[Dict[str, Any]] = []
         for quote in self._pepperstone_crypto_alt_quotes():
             symbol_name = f"{base}{quote}"
             key = _normalize_name(symbol_name)
             if key in self.symbol_lookup:
                 symbol_id, resolved_name = self.symbol_lookup[key]
-                return {
-                    "requested_asset": canonical,
-                    "symbol_id": symbol_id,
-                    "symbol_name": resolved_name,
-                    "broker_base": base,
-                    "broker_quote": quote,
-                    "signal_quote": "USD",
-                    "reason": "pepperstone_crypto_alt_quote",
-                }
-        return None
+                candidates.append(
+                    {
+                        "requested_asset": canonical,
+                        "symbol_id": symbol_id,
+                        "symbol_name": resolved_name,
+                        "broker_base": base,
+                        "broker_quote": quote,
+                        "signal_quote": "USD",
+                        "reason": "pepperstone_crypto_alt_quote",
+                    }
+                )
+        return candidates
+
+    def _resolve_pepperstone_crypto_alt(self, asset: Any) -> Optional[Dict[str, Any]]:
+        candidates = self._pepperstone_crypto_alt_candidates(asset)
+        if not candidates:
+            return None
+        selected = dict(candidates[0])
+        selected["fallbacks"] = [dict(item) for item in candidates[1:]]
+        return selected
 
     def _send_preflight(self) -> None:
         requested = self.payload.get("assets")
@@ -660,6 +679,19 @@ class CTraderOneShot:
     @staticmethod
     def _symbol_price_digits(symbol: Any) -> int:
         return max(0, int(getattr(symbol, "digits", 0) or 0))
+
+    @staticmethod
+    def _symbol_trading_mode(symbol: Any) -> int:
+        return int(getattr(symbol, "tradingMode", ProtoOATradingMode.ENABLED) or 0)
+
+    @staticmethod
+    def _symbol_trading_mode_label(symbol: Any) -> str:
+        mode = CTraderOneShot._symbol_trading_mode(symbol)
+        return TRADING_MODE_LABELS.get(mode, str(mode))
+
+    @staticmethod
+    def _symbol_trading_enabled(symbol: Any) -> bool:
+        return CTraderOneShot._symbol_trading_mode(symbol) == int(ProtoOATradingMode.ENABLED)
 
     @staticmethod
     def _category_for_asset(asset: Any) -> str:
@@ -832,7 +864,52 @@ class CTraderOneShot:
         if not symbols:
             self._finish(False, f"cTrader symbol spec missing for symbolId={symbol_id}")
             return
-        self._pending_specs[label] = symbols[0]
+        symbol = symbols[0]
+        if label == "target" and not self._symbol_trading_enabled(symbol):
+            fallbacks = list(self._pending_order.get("symbol_override_fallbacks") or [])
+            if fallbacks:
+                next_override = dict(fallbacks.pop(0))
+                self._pending_order.update(
+                    {
+                        "symbol_id": int(next_override["symbol_id"]),
+                        "symbol_name": str(next_override["symbol_name"]),
+                        "broker_base": next_override["broker_base"],
+                        "broker_quote": next_override["broker_quote"],
+                        "signal_quote": next_override["signal_quote"],
+                        "symbol_override_reason": next_override["reason"],
+                        "symbol_override_fallbacks": fallbacks,
+                    }
+                )
+                _stderr(
+                    "cTrader symbol "
+                    f"{getattr(symbol, 'symbolName', symbol_id)} is not trade-enabled "
+                    f"({self._symbol_trading_mode_label(symbol)}); trying "
+                    f"{next_override['symbol_name']}"
+                )
+                self._request_symbol_detail("target", int(next_override["symbol_id"]))
+                return
+            self._finish(
+                False,
+                "cTrader symbol trading disabled for "
+                f"{getattr(symbol, 'symbolName', symbol_id)} "
+                f"({self._symbol_trading_mode_label(symbol)})",
+                symbol_id=symbol_id,
+                symbol_name=str(getattr(symbol, "symbolName", "") or ""),
+                trading_mode=self._symbol_trading_mode_label(symbol),
+            )
+            return
+        if label == "direct_order" and not self._symbol_trading_enabled(symbol):
+            self._finish(
+                False,
+                "cTrader symbol trading disabled for "
+                f"{getattr(symbol, 'symbolName', symbol_id)} "
+                f"({self._symbol_trading_mode_label(symbol)})",
+                symbol_id=symbol_id,
+                symbol_name=str(getattr(symbol, "symbolName", "") or ""),
+                trading_mode=self._symbol_trading_mode_label(symbol),
+            )
+            return
+        self._pending_specs[label] = symbol
         if label == "update_stop":
             position_id = _safe_int(self._pending_order.get("position_id"), 0)
             raw_stop_loss = _safe_float(self._pending_order.get("stop_loss"), 0.0)
@@ -1139,6 +1216,7 @@ class CTraderOneShot:
                         "broker_quote": symbol_override["broker_quote"],
                         "signal_quote": symbol_override["signal_quote"],
                         "symbol_override_reason": symbol_override["reason"],
+                        "symbol_override_fallbacks": list(symbol_override.get("fallbacks") or []),
                     }
                 )
             self._pending_specs = {}

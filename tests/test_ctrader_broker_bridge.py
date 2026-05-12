@@ -3,6 +3,7 @@ from __future__ import annotations
 from types import SimpleNamespace
 
 import pytest
+from ctrader_open_api.messages.OpenApiModelMessages_pb2 import ProtoOATradingMode
 
 from integrations.ctrader_broker_bridge.ctrader_broker_bridge import CTraderOneShot
 
@@ -39,6 +40,42 @@ def test_market_order_sltp_uses_relative_distances_not_absolute_prices() -> None
     assert "stopLoss" not in fields
     assert "takeProfit" not in fields
     assert meta["unit"] == "1/100000_price"
+
+
+def test_pepperstone_crypto_alt_quote_keeps_fallbacks_in_order(monkeypatch) -> None:
+    monkeypatch.setenv("CTRADER_EXECUTION_BROKER_NAME", "pepperstone")
+    monkeypatch.setenv("PEPPERSTONE_CTRADER_CRYPTO_ALT_QUOTES", "EUR,GBP,AUD")
+    bridge = CTraderOneShot.__new__(CTraderOneShot)
+    bridge.symbol_lookup = {
+        "ETHEUR": (11, "ETHEUR"),
+        "ETHGBP": (12, "ETHGBP"),
+    }
+
+    selected = bridge._resolve_pepperstone_crypto_alt("ETH-USD")
+
+    assert selected is not None
+    assert selected["symbol_name"] == "ETHEUR"
+    assert selected["broker_quote"] == "EUR"
+    assert selected["fallbacks"] == [
+        {
+            "requested_asset": "ETH-USD",
+            "symbol_id": 12,
+            "symbol_name": "ETHGBP",
+            "broker_base": "ETH",
+            "broker_quote": "GBP",
+            "signal_quote": "USD",
+            "reason": "pepperstone_crypto_alt_quote",
+        }
+    ]
+
+
+def test_symbol_trading_enabled_rejects_disabled_contract() -> None:
+    disabled = SimpleNamespace(tradingMode=ProtoOATradingMode.CLOSE_ONLY_MODE)
+    enabled = SimpleNamespace(tradingMode=ProtoOATradingMode.ENABLED)
+
+    assert CTraderOneShot._symbol_trading_enabled(enabled) is True
+    assert CTraderOneShot._symbol_trading_enabled(disabled) is False
+    assert CTraderOneShot._symbol_trading_mode_label(disabled) == "CLOSE_ONLY_MODE"
 
 
 def test_crypto_max_lots_defaults_to_tiny_cap(monkeypatch) -> None:
