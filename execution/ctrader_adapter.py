@@ -271,6 +271,134 @@ class CTraderAdapter(ExchangeAdapter):
         value = float(volume or 0.0) / 100.0
         return value if value > 0.0 else float(fallback or 0.0)
 
+    @staticmethod
+    def _int_or_zero(value: Any) -> int:
+        try:
+            return max(0, int(float(value or 0)))
+        except Exception:
+            return 0
+
+    @classmethod
+    def _extract_broker_volume(cls, position: Dict[str, Any]) -> int:
+        if not isinstance(position, dict):
+            return 0
+        metadata = position.get("metadata") if isinstance(position.get("metadata"), dict) else {}
+        broker_execution = metadata.get("broker_execution") if isinstance(metadata.get("broker_execution"), dict) else {}
+        broker_sizing = broker_execution.get("broker_sizing") if isinstance(broker_execution.get("broker_sizing"), dict) else {}
+        candidates = (
+            position.get("broker_volume"),
+            broker_execution.get("filled_volume"),
+            broker_execution.get("volume"),
+            broker_sizing.get("filled_volume"),
+            broker_sizing.get("broker_volume"),
+        )
+        for candidate in candidates:
+            value = cls._int_or_zero(candidate)
+            if value > 0:
+                return value
+        return 0
+
+    @classmethod
+    def _close_volume_for_local_size(cls, position: Dict[str, Any], local_close_size: float) -> int:
+        local_close_size = max(0.0, float(local_close_size or 0.0))
+        broker_volume_total = cls._extract_broker_volume(position)
+        current_local_size = max(0.0, float(position.get("position_size") or 0.0))
+        is_full_close = current_local_size <= 0.0 or local_close_size >= max(0.0, current_local_size - 1e-9)
+        if broker_volume_total > 0:
+            if is_full_close:
+                return broker_volume_total
+            if current_local_size > 0.0:
+                requested_ratio = max(0.0, min(1.0, local_close_size / current_local_size))
+                volume = max(1, int(round(broker_volume_total * requested_ratio)))
+                if volume >= broker_volume_total:
+                    volume = max(1, broker_volume_total - 1)
+                return volume
+        return cls._local_size_to_volume(local_close_size)
+
+    @staticmethod
+    def _live_position_volume(raw_position: Dict[str, Any]) -> int:
+        if not isinstance(raw_position, dict):
+            return 0
+        trade_data = raw_position.get("tradeData") if isinstance(raw_position.get("tradeData"), dict) else {}
+        for candidate in (trade_data.get("volume"), raw_position.get("volume")):
+            try:
+                value = int(float(candidate or 0))
+            except Exception:
+                value = 0
+            if value > 0:
+                return value
+        return 0
+
+    def _reconcile_ambiguous_close(
+        self,
+        position: Dict[str, Any],
+        *,
+        local_close_size: float,
+        requested_volume: int,
+        error: str,
+    ) -> Optional[OrderResult]:
+        position_id = str(position.get("broker_trade_id") or position.get("trade_id") or "").strip()
+        if not position_id:
+            return None
+        try:
+            live_positions = list(self.list_open_positions() or [])
+        except Exception as exc:
+            logger.warning(f"[cTrader] close reconcile failed for {position_id}: {exc}")
+            return None
+        live_match = next(
+            (
+                item for item in live_positions
+                if str(item.get("positionId") or "").strip() == position_id
+            ),
+            None,
+        )
+        current_local_size = max(0.0, float(position.get("position_size") or 0.0))
+        is_full_close = current_local_size <= 0.0 or local_close_size >= max(0.0, current_local_size - 1e-9)
+        broker_volume_before = self._extract_broker_volume(position)
+        live_volume = self._live_position_volume(live_match) if live_match else 0
+        avg_price = float(position.get("current_price") or position.get("entry_price") or 0.0)
+
+        if live_match is None:
+            return OrderResult(
+                order_id=position_id,
+                status="FILLED",
+                filled_qty=local_close_size,
+                avg_price=avg_price,
+                raw={
+                    "success": True,
+                    "reconciled_after_error": True,
+                    "reconcile_result": "position_missing_after_close_attempt",
+                    "requested_volume": requested_volume,
+                    "original_error": error,
+                },
+            )
+
+        if (
+            not is_full_close
+            and broker_volume_before > 0
+            and live_volume > 0
+            and live_volume < broker_volume_before
+        ):
+            closed_ratio = (broker_volume_before - live_volume) / float(broker_volume_before)
+            filled_qty = min(local_close_size, round(current_local_size * closed_ratio, 8))
+            if filled_qty > 0.0:
+                return OrderResult(
+                    order_id=position_id,
+                    status="FILLED",
+                    filled_qty=filled_qty,
+                    avg_price=avg_price,
+                    raw={
+                        "success": True,
+                        "reconciled_after_error": True,
+                        "reconcile_result": "position_reduced_after_close_attempt",
+                        "requested_volume": requested_volume,
+                        "live_volume": live_volume,
+                        "broker_volume_before": broker_volume_before,
+                        "original_error": error,
+                    },
+                )
+        return None
+
     def _order_payload(self, req: OrderRequest) -> Dict[str, Any]:
         canonical = self.canonical_asset(req.asset or req.symbol)
         category = str(req.category or _SUPPORTED_ASSETS.get(canonical, {}).get("category") or "forex").lower()
@@ -379,7 +507,12 @@ class CTraderAdapter(ExchangeAdapter):
                 "broker_cash_per_price_unit_per_size": 1.0,
             }
         broker_size = float(broker_execution["broker_sizing"].get("broker_size") or payload.get("lot_size") or 0.0)
-        broker_volume = int(broker_execution["broker_sizing"].get("broker_volume") or payload.get("volume") or 0)
+        broker_volume = int(
+            broker_execution["broker_sizing"].get("filled_volume")
+            or broker_execution["broker_sizing"].get("broker_volume")
+            or payload.get("volume")
+            or 0
+        )
         local_position_size = float(broker_execution["broker_sizing"].get("local_position_size") or filled_size or payload.get("local_size") or 0.0)
         metadata["broker_execution"] = broker_execution
         metadata.setdefault("take_profit_levels", list(req.metadata.get("take_profit_levels") or []))
@@ -416,7 +549,7 @@ class CTraderAdapter(ExchangeAdapter):
     ) -> OrderResult:
         position_id = str(position.get("broker_trade_id") or position.get("trade_id") or "").strip()
         local_close_size = max(0.0, float(local_close_size or 0.0))
-        volume = self._local_size_to_volume(local_close_size)
+        volume = self._close_volume_for_local_size(position, local_close_size)
         if self._dry_run():
             return OrderResult(order_id=position_id, status="FAILED", error="cTrader execution dry-run", raw={"dry_run": True})
         result = self._run_bridge(
@@ -430,6 +563,14 @@ class CTraderAdapter(ExchangeAdapter):
             },
         )
         if not result.get("success"):
+            reconciled = self._reconcile_ambiguous_close(
+                position,
+                local_close_size=local_close_size,
+                requested_volume=volume,
+                error=str(result.get("error") or result),
+            )
+            if reconciled is not None:
+                return reconciled
             return OrderResult(order_id=position_id, status="FAILED", error=str(result.get("error") or result), raw=result)
         avg_price = float(result.get("avg_price") or position.get("current_price") or position.get("entry_price") or 0.0)
         return OrderResult(

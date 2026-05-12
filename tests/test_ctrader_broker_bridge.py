@@ -139,3 +139,63 @@ def test_pepperstone_btc_eth_are_allowed_for_alt_quote_execution(monkeypatch) ->
 
     assert adapter.supports_asset("BTC-USD", "crypto")[0] is True
     assert adapter.supports_asset("ETH-USD", "crypto")[0] is True
+
+
+def test_ctrader_close_uses_exact_broker_volume(monkeypatch) -> None:
+    from execution.ctrader_adapter import CTraderAdapter
+
+    adapter = CTraderAdapter()
+    captured = {}
+
+    def fake_run_bridge(action: str, payload: dict) -> dict:
+        captured["action"] = action
+        captured["payload"] = dict(payload)
+        return {"success": True, "avg_price": 86.12}
+
+    monkeypatch.setattr(adapter, "_dry_run", lambda: False)
+    monkeypatch.setattr(adapter, "_run_bridge", fake_run_bridge)
+    position = {
+        "trade_id": "216941623",
+        "broker_trade_id": "216941623",
+        "position_size": 50.0,
+        "broker_volume": 5000,
+        "current_price": 86.12,
+        "metadata": {},
+    }
+
+    result = adapter.close_position(position, reason="test")
+
+    assert result.status == "FILLED"
+    assert captured["action"] == "partial_close"
+    assert captured["payload"]["position_id"] == "216941623"
+    assert captured["payload"]["volume"] == 5000
+
+
+def test_ctrader_ambiguous_close_reconciles_when_position_missing(monkeypatch) -> None:
+    from execution.ctrader_adapter import CTraderAdapter
+
+    adapter = CTraderAdapter()
+
+    def fake_run_bridge(_action: str, _payload: dict) -> dict:
+        return {
+            "success": False,
+            "error": "ctrader_execution_unknown: cTrader execution bridge timed out at stage=execution_event after an order request was sent; check broker before retrying",
+        }
+
+    monkeypatch.setattr(adapter, "_dry_run", lambda: False)
+    monkeypatch.setattr(adapter, "_run_bridge", fake_run_bridge)
+    monkeypatch.setattr(adapter, "list_open_positions", lambda: [])
+    position = {
+        "trade_id": "216941623",
+        "broker_trade_id": "216941623",
+        "position_size": 50.0,
+        "broker_volume": 5000,
+        "current_price": 83.90,
+        "metadata": {},
+    }
+
+    result = adapter.close_position(position, reason="Managed Stop")
+
+    assert result.status == "FILLED"
+    assert result.raw["reconciled_after_error"] is True
+    assert result.raw["reconcile_result"] == "position_missing_after_close_attempt"
