@@ -199,3 +199,61 @@ def test_ctrader_ambiguous_close_reconciles_when_position_missing(monkeypatch) -
     assert result.status == "FILLED"
     assert result.raw["reconciled_after_error"] is True
     assert result.raw["reconcile_result"] == "position_missing_after_close_attempt"
+
+
+def test_ctrader_trade_snapshot_preserves_trade_metadata() -> None:
+    from execution.ctrader_adapter import CTraderAdapter
+    from execution.exchange_adapter import OrderRequest
+
+    adapter = CTraderAdapter()
+    req = OrderRequest(
+        symbol="XAUUSD",
+        side="BUY",
+        quantity=1.0,
+        asset="XAU/USD",
+        category="commodities",
+        local_quantity=1.0,
+        price=4711.53,
+        stop_loss=4700.48,
+        take_profit=4731.17,
+        metadata={
+            "confidence": 0.74,
+            "strategy_id": "breakout_continuation",
+            "take_profit_levels": [4731.17, 4742.21],
+            "timestamp": "2026-05-12T12:52:22+00:00",
+        },
+    )
+
+    snapshot = adapter._build_trade_snapshot(
+        req,
+        {
+            "asset": "XAU/USD",
+            "category": "commodities",
+            "side": "BUY",
+            "entry_price": 4711.53,
+            "stop_loss": 4700.48,
+            "take_profit": 4731.17,
+            "local_size": 1.0,
+            "lot_size": 1.0,
+            "volume": 100,
+        },
+        {
+            "account_id": "47228282",
+            "symbol_id": "41",
+            "symbol_name": "XAUUSD",
+        },
+        order_id="217015017",
+        avg_price=4711.53,
+        filled_size=1.0,
+    )
+
+    assert snapshot["confidence"] == pytest.approx(0.74)
+    assert snapshot["strategy_id"] == "breakout_continuation"
+    assert snapshot["requested_entry_price"] == pytest.approx(4711.53)
+    assert snapshot["highest_price"] == pytest.approx(4711.53)
+    assert snapshot["lowest_price"] == pytest.approx(4711.53)
+    assert snapshot["tp_hit"] == 0
+    assert snapshot["risk_reward"] > 0.0
+    assert snapshot["entry_time"] == snapshot["open_time"]
+    assert snapshot["management_checkpoint_at"] == snapshot["open_time"]
+    assert snapshot["take_profit_levels"] == [4731.17, 4742.21]

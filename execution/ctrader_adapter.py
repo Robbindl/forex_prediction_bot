@@ -6,6 +6,7 @@ import subprocess
 import sys
 import time
 import uuid
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, Optional, Tuple
 
@@ -484,6 +485,7 @@ class CTraderAdapter(ExchangeAdapter):
         profile = self._profile_config()
         broker_name = self._broker_name()
         environment = self._environment()
+        now_iso = datetime.now(timezone.utc).isoformat()
         broker_execution = {
             "broker": "ctrader",
             "broker_name": broker_name,
@@ -516,7 +518,14 @@ class CTraderAdapter(ExchangeAdapter):
         local_position_size = float(broker_execution["broker_sizing"].get("local_position_size") or filled_size or payload.get("local_size") or 0.0)
         metadata["broker_execution"] = broker_execution
         metadata.setdefault("take_profit_levels", list(req.metadata.get("take_profit_levels") or []))
-        return {
+        entry_price = float(avg_price or payload.get("entry_price") or 0.0)
+        stop_loss = float(payload.get("stop_loss") or 0.0)
+        take_profit = float(payload.get("take_profit") or 0.0)
+        requested_entry_price = float(payload.get("entry_price") or avg_price or 0.0)
+        confidence = float(metadata.get("confidence") or 0.0)
+        initial_risk = abs(entry_price - stop_loss)
+        risk_reward = abs(take_profit - entry_price) / initial_risk if initial_risk > 0.0 and take_profit > 0.0 else 0.0
+        trade = {
             "trade_id": order_id,
             "broker_trade_id": str(result.get("position_id") or order_id),
             "broker_deal_reference": str(result.get("deal_id") or result.get("order_id") or ""),
@@ -524,21 +533,37 @@ class CTraderAdapter(ExchangeAdapter):
             "broker": "ctrader",
             "execution_mode": f"ctrader_{environment}",
             "asset": payload.get("asset"),
+            "canonical_asset": payload.get("asset"),
             "category": payload.get("category"),
             "direction": payload.get("side"),
             "signal": payload.get("side"),
-            "entry_price": avg_price,
-            "current_price": avg_price,
-            "stop_loss": float(payload.get("stop_loss") or 0.0),
-            "take_profit": float(payload.get("take_profit") or 0.0),
+            "confidence": round(confidence, 4),
+            "entry_price": entry_price,
+            "current_price": entry_price,
+            "stop_loss": stop_loss,
+            "original_sl": stop_loss,
+            "take_profit": take_profit,
+            "original_take_profit": take_profit,
             "take_profit_levels": list(req.metadata.get("take_profit_levels") or []),
             "position_size": local_position_size,
             "initial_position_size": local_position_size,
             "broker_position_size": local_position_size,
             "broker_volume": broker_volume,
             "lot_size": broker_size,
+            "strategy_id": str(metadata.get("strategy_id") or "UNKNOWN"),
+            "open_time": now_iso,
+            "entry_time": now_iso,
+            "pnl": 0.0,
+            "highest_price": entry_price,
+            "lowest_price": entry_price,
+            "tp_hit": 0,
+            "risk_reward": round(risk_reward, 4),
+            "timestamp": metadata.get("timestamp"),
+            "requested_entry_price": requested_entry_price,
             "metadata": metadata,
         }
+        trade["management_checkpoint_at"] = now_iso
+        return trade
 
     def partial_close_position(
         self,
