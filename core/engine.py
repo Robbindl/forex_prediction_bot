@@ -2150,7 +2150,14 @@ class TradingCore:
         except Exception:
             return 999999.0
 
-    def _broker_missing_position_confirmed(self, pos: Dict[str, Any], key: str, now: float) -> bool:
+    def _broker_missing_position_confirmed(
+        self,
+        pos: Dict[str, Any],
+        key: str,
+        now: float,
+        *,
+        broker_label: str = "IG",
+    ) -> bool:
         if not hasattr(self, "_broker_missing_position_first_seen"):
             self._broker_missing_position_first_seen = {}
         grace = self._broker_missing_grace_seconds()
@@ -2161,7 +2168,7 @@ class TradingCore:
         if first_seen <= 0.0:
             self._broker_missing_position_first_seen[key] = now
             logger.warning(
-                f"[TradingCore] IG reconciliation missing {pos.get('asset')} {key}; "
+                f"[TradingCore] {broker_label} reconciliation missing {pos.get('asset')} {key}; "
                 f"waiting {int(round(grace))}s before closing local state"
             )
             return False
@@ -2364,6 +2371,64 @@ class TradingCore:
         logger.warning(f"[TradingCore] Closed local broker position {trade_id}: no longer open on IG")
         return True
 
+    def _extract_ctrader_position_snapshot(self, local_pos: Dict[str, Any], raw_item: Dict[str, Any]) -> Dict[str, Any]:
+        snapshot = self._normalize_broker_position_prices(local_pos)
+        trade_data = raw_item.get("tradeData") if isinstance(raw_item.get("tradeData"), dict) else {}
+        position_id = str(raw_item.get("positionId") or snapshot.get("broker_trade_id") or snapshot.get("trade_id") or "").strip()
+        raw_price = self._float_or_zero(raw_item.get("price"))
+        raw_volume = int(self._float_or_zero(trade_data.get("volume")))
+
+        if position_id:
+            snapshot["broker_trade_id"] = position_id
+        if raw_price > 0:
+            snapshot["entry_price"] = self._normalize_position_price(snapshot, raw_price)
+        if raw_volume > 0:
+            local_size = round(raw_volume / 100.0, 8)
+            snapshot["broker_volume"] = raw_volume
+            snapshot["broker_position_size"] = local_size
+            if self._float_or_zero(snapshot.get("position_size")) <= 0.0:
+                snapshot["position_size"] = local_size
+
+        metadata = dict(snapshot.get("metadata") or {})
+        metadata["broker_reconciliation"] = {
+            "source": "ctrader_positions",
+            "synced_at": datetime.now(timezone.utc).isoformat(),
+            "raw_price": raw_price,
+            "raw_volume": raw_volume,
+            "position_id": position_id,
+        }
+        snapshot["metadata"] = metadata
+        return self._normalize_broker_position_prices(snapshot)
+
+    def _close_local_broker_position_missing_on_ctrader(self, pos: Dict[str, Any]) -> bool:
+        trade_id = str(pos.get("trade_id") or "").strip()
+        if not trade_id:
+            return False
+        current = self._normalize_position_price(pos, pos.get("current_price") or pos.get("entry_price") or 0.0)
+        entry = self._normalize_position_price(pos, pos.get("entry_price") or current)
+        direction = str(pos.get("direction") or pos.get("signal") or "BUY").upper()
+        size = self._float_or_zero(pos.get("position_size"))
+        pnl = self._manual_close_pnl(pos, entry, current, size, direction)
+        metadata = dict(pos.get("metadata") or {})
+        metadata["broker_reconciliation_close"] = {
+            "source": "ctrader_positions",
+            "closed_at": datetime.now(timezone.utc).isoformat(),
+            "reason": "position no longer appears in cTrader open positions",
+        }
+        closed = self.state.close_position(
+            trade_id,
+            current,
+            "Broker reconciliation: position no longer open on cTrader",
+            pnl,
+            extra_updates={"metadata": metadata},
+        )
+        if not closed:
+            return False
+        self._record_trade_close_side_effects(closed, pnl)
+        self._set_post_close_cooldown(str(closed.get("asset", "") or ""), closed)
+        logger.warning(f"[TradingCore] Closed local broker position {trade_id}: no longer open on cTrader")
+        return True
+
     def _reconcile_broker_positions(self, *, force: bool = False) -> None:
         if not self._broker_balance_enabled():
             return
@@ -2372,7 +2437,12 @@ class TradingCore:
             pos for pos in local_positions
             if self._is_broker_managed_position(pos) and self._position_broker_key(pos) == "ig"
         ]
-        if self.active_execution_broker() != "ig" and not ig_positions:
+        ctrader_positions = [
+            pos for pos in local_positions
+            if self._is_broker_managed_position(pos) and self._position_broker_key(pos) == "ctrader"
+        ]
+        active_provider = self.active_execution_broker()
+        if active_provider not in {"ig", "ctrader"} and not ig_positions and not ctrader_positions:
             return
         router = getattr(self, "exchange_router", None)
         if router is None or not hasattr(router, "list_open_positions"):
@@ -2472,7 +2542,7 @@ class TradingCore:
                     f"{deal_id or 'unknown'} -> {new_deal_id or 'unknown'}"
                 )
                 continue
-            if not missing_key or not self._broker_missing_position_confirmed(pos, missing_key, now):
+            if not missing_key or not self._broker_missing_position_confirmed(pos, missing_key, now, broker_label="IG"):
                 continue
             if self._close_local_broker_position_missing_on_ig(pos):
                 self._broker_missing_position_first_seen.pop(missing_key, None)
@@ -2489,6 +2559,87 @@ class TradingCore:
             logger.info(
                 f"[TradingCore] IG reconciliation synced={synced} remapped={rematched} "
                 f"closed_missing={closed_missing}"
+            )
+            self._publish_positions_snapshot()
+
+        if self.active_execution_broker() != "ctrader" and not ctrader_positions:
+            return
+        if hasattr(router, "has_adapter") and not router.has_adapter("ctrader"):
+            try:
+                self._ensure_execution_adapter_registered("ctrader")
+            except Exception as exc:
+                self._notify_broker_issue(
+                    "BROKER",
+                    "broker",
+                    str(exc),
+                    stage="broker position reconciliation",
+                    action="cTrader positions were not reconciled; cTrader adapter unavailable",
+                )
+                return
+        if hasattr(router, "has_adapter") and not router.has_adapter("ctrader"):
+            self._notify_broker_issue(
+                "BROKER",
+                "broker",
+                "cTrader adapter unavailable",
+                stage="broker position reconciliation",
+                action="cTrader positions were not reconciled; local state left unchanged",
+            )
+            return
+        try:
+            raw_positions = router.list_open_positions("ctrader")
+        except Exception as exc:
+            self._notify_broker_issue(
+                "BROKER",
+                "broker",
+                str(exc),
+                stage="broker position reconciliation",
+                action="cTrader positions were not reconciled; local state left unchanged",
+            )
+            return
+
+        normalized_raw_positions = [item for item in list(raw_positions or []) if isinstance(item, dict)]
+        by_position_id: Dict[str, Dict[str, Any]] = {}
+        for item in normalized_raw_positions:
+            position_id = str(item.get("positionId") or "").strip()
+            if position_id:
+                by_position_id[position_id] = item
+
+        ctrader_synced = 0
+        ctrader_closed_missing = 0
+        ctrader_active_missing_keys: set[str] = set()
+        for pos in ctrader_positions:
+            position_id = str(pos.get("broker_trade_id") or pos.get("trade_id") or "").strip()
+            trade_id = str(pos.get("trade_id") or position_id or "").strip()
+            missing_key = f"ctrader:{position_id or trade_id}" if (position_id or trade_id) else ""
+            if missing_key:
+                ctrader_active_missing_keys.add(missing_key)
+            raw_item = by_position_id.get(position_id)
+            if raw_item:
+                if missing_key:
+                    self._broker_missing_position_first_seen.pop(missing_key, None)
+                snapshot = self._extract_ctrader_position_snapshot(pos, raw_item)
+                if snapshot != pos:
+                    self.state.sync_open_position(snapshot)
+                    ctrader_synced += 1
+                continue
+            if not missing_key or not self._broker_missing_position_confirmed(pos, missing_key, now, broker_label="cTrader"):
+                continue
+            if self._close_local_broker_position_missing_on_ctrader(pos):
+                self._broker_missing_position_first_seen.pop(missing_key, None)
+                ctrader_closed_missing += 1
+
+        if self._broker_missing_position_first_seen:
+            valid_keys = active_missing_keys | ctrader_active_missing_keys
+            self._broker_missing_position_first_seen = {
+                key: first_seen
+                for key, first_seen in self._broker_missing_position_first_seen.items()
+                if key in valid_keys
+            }
+
+        if ctrader_synced or ctrader_closed_missing:
+            logger.info(
+                f"[TradingCore] cTrader reconciliation synced={ctrader_synced} "
+                f"closed_missing={ctrader_closed_missing}"
             )
             self._publish_positions_snapshot()
 
