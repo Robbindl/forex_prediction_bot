@@ -267,6 +267,19 @@ class CTraderDepthBridge:
         try:
             payload_bytes = response.payload
             _debug(f"Payload bytes length: {len(payload_bytes)}")
+            if int(getattr(response, "payloadType", 0) or 0) == int(ProtoOAErrorRes().payloadType):
+                error = ProtoOAErrorRes()
+                error.ParseFromString(payload_bytes)
+                code = str(getattr(error, "errorCode", "") or "ctrader_error")
+                description = str(getattr(error, "description", "") or code)
+                source = self._active_token_source or "configured access token"
+                account_hint = self.account_hint or "unset"
+                self._fatal(RuntimeError(
+                    f"cTrader account list failed: {code}: {description}. "
+                    f"Token source={source}; environment={self.environment}; account_hint={account_hint}. "
+                    "Regenerate the cTrader Open API token for this broker account and environment."
+                ))
+                return
             # Try parsing as the account list response message
             from ctrader_open_api.messages.OpenApiMessages_pb2 import ProtoOAGetAccountListByAccessTokenRes
             parsed = ProtoOAGetAccountListByAccessTokenRes()
