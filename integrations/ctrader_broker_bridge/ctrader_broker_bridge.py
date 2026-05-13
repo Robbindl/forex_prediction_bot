@@ -719,9 +719,26 @@ class CTraderOneShot:
             )
         if category_text:
             return max(0.01, _safe_float(category_text, base_cap)), f"{category}_env_cap"
-        if category == "crypto":
-            return min(base_cap, 0.01), "crypto_default_cap"
         return base_cap, "global_cap"
+
+    @staticmethod
+    def _gold_reference_price() -> float:
+        value = (
+            os.getenv("PEPPERSTONE_CTRADER_GOLD_REFERENCE_PRICE", "").strip()
+            or os.getenv("PEPPERSTONE_CTRADER_LIVE_GOLD_REFERENCE_PRICE", "").strip()
+            or os.getenv("SIZING_REFERENCE_GOLD_PRICE", "").strip()
+            or "4700.0"
+        )
+        return max(1.0, _safe_float(value, 4700.0))
+
+    @staticmethod
+    def _gold_parity_reference_move_pct() -> float:
+        value = (
+            os.getenv("PEPPERSTONE_CTRADER_GOLD_PARITY_REFERENCE_MOVE_PCT", "").strip()
+            or os.getenv("PEPPERSTONE_CTRADER_LIVE_GOLD_PARITY_REFERENCE_MOVE_PCT", "").strip()
+            or "0.0100"
+        )
+        return max(0.000001, _safe_float(value, 0.0100))
 
     @staticmethod
     def _round_price_to_digits(price: Any, digits: int) -> float:
@@ -896,6 +913,55 @@ class CTraderOneShot:
             "quote_to_usd": conversion,
             "conversion_source": conversion_source,
         }
+
+    def _cash_value_usd_for_reference_move_at_001_lots(
+        self,
+        symbol: Any,
+        symbol_id: int,
+        *,
+        reference_price: float,
+        reference_move_pct: float,
+    ) -> Tuple[float, Dict[str, Any]]:
+        lot_size = self._symbol_lot_size_cents(symbol)
+        if lot_size <= 0:
+            raise RuntimeError("cTrader symbol lotSize missing")
+        _base, quote = self._symbol_asset_codes(symbol_id)
+        quote = quote or "USD"
+        conversion = 1.0
+        conversion_source = "quote_is_usd"
+        if quote != "USD":
+            conversion_meta = self._pending_conversions.get(quote) or {}
+            conversion = float(conversion_meta.get("rate") or 0.0)
+            conversion_source = str(conversion_meta.get("symbol_name") or "")
+            if conversion <= 0.0:
+                raise RuntimeError(f"live USD conversion missing for {quote}")
+        units_at_001_lots = (float(lot_size) * 0.01) / 100.0
+        price = max(0.0, float(reference_price or 0.0))
+        move_pct = max(0.0, float(reference_move_pct or 0.0))
+        cash_quote = units_at_001_lots * price * move_pct
+        cash_usd = cash_quote * conversion
+        return cash_usd, {
+            "quote_asset": quote,
+            "reference_price": round(price, 8),
+            "reference_move_pct": round(move_pct, 8),
+            "reference_price_move": round(price * move_pct, 8),
+            "lot_size_cents": lot_size,
+            "units_at_0_01_lots": units_at_001_lots,
+            "quote_to_usd": conversion,
+            "conversion_source": conversion_source,
+            "cash_usd_at_0_01_lots": round(cash_usd, 8),
+        }
+
+    @staticmethod
+    def _gold_parity_lots(gold_cash_at_001: float, target_cash_at_001: float) -> Tuple[float, str]:
+        gold_cash = max(0.0, float(gold_cash_at_001 or 0.0))
+        target_cash = max(0.0, float(target_cash_at_001 or 0.0))
+        if gold_cash <= 0.0 or target_cash <= 0.0:
+            return 0.01, "minimum 0.01 fallback"
+        raw_lots = 0.01 * (gold_cash / target_cash)
+        if raw_lots <= 0.01:
+            return 0.01, "target output >= gold benchmark; fixed 0.01"
+        return raw_lots, "gold percent cash parity"
 
     def _request_symbol_detail(self, label: str, symbol_id: int) -> None:
         assert self.client is not None and self.account_id is not None
@@ -1139,15 +1205,30 @@ class CTraderOneShot:
         if gold_pip_usd <= 0.0 or target_pip_usd <= 0.0:
             self._finish(False, "Pepperstone cTrader pip value calculation failed")
             return
+        price_factor, price_conversion = self._order_price_factor()
+        raw_target_reference_price = _safe_float(self.payload.get("entry_price"), 0.0)
+        target_reference_price = raw_target_reference_price * price_factor if raw_target_reference_price > 0.0 else 0.0
+        reference_move_pct = self._gold_parity_reference_move_pct()
+        gold_reference_price = self._gold_reference_price()
+        if _normalize_name(asset) in {"XAUUSD", "GOLD"} and target_reference_price > 0.0:
+            gold_reference_price = target_reference_price
+        gold_reference_cash, gold_reference_profile = self._cash_value_usd_for_reference_move_at_001_lots(
+            gold_symbol,
+            gold_symbol_id,
+            reference_price=gold_reference_price,
+            reference_move_pct=reference_move_pct,
+        )
+        target_reference_cash, target_reference_profile = self._cash_value_usd_for_reference_move_at_001_lots(
+            target_symbol,
+            target_symbol_id,
+            reference_price=target_reference_price,
+            reference_move_pct=reference_move_pct,
+        )
         if _normalize_name(asset) in {"XAUUSD", "GOLD"}:
             desired_lots = 0.01
             reason = "gold benchmark fixed 0.01"
         else:
-            desired_lots = 0.01 * (gold_pip_usd / target_pip_usd)
-            reason = "gold pip parity"
-            if desired_lots <= 0.01:
-                desired_lots = 0.01
-                reason = "volatility cap 0.01"
+            desired_lots, reason = self._gold_parity_lots(gold_reference_cash, target_reference_cash)
         max_lots_cap, max_lots_source = self._max_lots_cap_for_asset(asset)
         desired_lots = min(max_lots_cap, max(0.01, float(desired_lots or 0.01)))
         volume, broker_lots = self._snap_volume(target_symbol, desired_lots, max_lots_cap=max_lots_cap)
@@ -1173,7 +1254,9 @@ class CTraderOneShot:
             "local_position_size": round(volume / 100.0, 8),
             "gold_pip_value_usd_at_0_01_lots": round(gold_pip_usd, 8),
             "target_pip_value_usd_at_0_01_lots": round(target_pip_usd, 8),
-            "raw_calculated_lots": round(0.01 * (gold_pip_usd / target_pip_usd), 8),
+            "gold_reference_cash_usd_at_0_01_lots": round(gold_reference_cash, 8),
+            "target_reference_cash_usd_at_0_01_lots": round(target_reference_cash, 8),
+            "raw_calculated_lots": round(self._gold_parity_lots(gold_reference_cash, target_reference_cash)[0], 8),
             "rounded_lots": broker_lots,
             "min_lots": round(display_min_lots, 6),
             "max_lots": round(display_max_lots, 6),
@@ -1182,8 +1265,9 @@ class CTraderOneShot:
             "reason": reason,
             "gold_profile": gold_profile,
             "target_profile": target_profile,
+            "gold_reference_profile": gold_reference_profile,
+            "target_reference_profile": target_reference_profile,
         }
-        price_factor, price_conversion = self._order_price_factor()
         if price_conversion:
             sizing["execution_symbol_override"] = {
                 "requested_asset": str(self._pending_order.get("requested_asset") or asset),

@@ -78,7 +78,7 @@ def test_symbol_trading_enabled_rejects_disabled_contract() -> None:
     assert CTraderOneShot._symbol_trading_mode_label(disabled) == "CLOSE_ONLY_MODE"
 
 
-def test_crypto_max_lots_defaults_to_tiny_cap(monkeypatch) -> None:
+def test_crypto_max_lots_defaults_to_global_cap(monkeypatch) -> None:
     monkeypatch.delenv("PEPPERSTONE_CTRADER_MAX_LOTS_CRYPTO", raising=False)
     monkeypatch.delenv("PEPPERSTONE_CTRADER_LIVE_MAX_LOTS_CRYPTO", raising=False)
     monkeypatch.setenv("PEPPERSTONE_CTRADER_MAX_LOTS", "1.00")
@@ -86,8 +86,8 @@ def test_crypto_max_lots_defaults_to_tiny_cap(monkeypatch) -> None:
 
     cap, source = bridge._max_lots_cap_for_asset("ETH-USD")
 
-    assert cap == 0.01
-    assert source == "crypto_default_cap"
+    assert cap == 1.00
+    assert source == "global_cap"
 
 
 def test_crypto_max_lots_allows_explicit_category_override(monkeypatch) -> None:
@@ -99,6 +99,20 @@ def test_crypto_max_lots_allows_explicit_category_override(monkeypatch) -> None:
 
     assert cap == 0.03
     assert source == "crypto_env_cap"
+
+
+def test_gold_parity_lots_scales_low_paying_assets_up() -> None:
+    lots, reason = CTraderOneShot._gold_parity_lots(47.0, 10.0)
+
+    assert lots == pytest.approx(0.047)
+    assert reason == "gold percent cash parity"
+
+
+def test_gold_parity_lots_keeps_higher_paying_assets_at_minimum() -> None:
+    lots, reason = CTraderOneShot._gold_parity_lots(47.0, 60.0)
+
+    assert lots == pytest.approx(0.01)
+    assert reason == "target output >= gold benchmark; fixed 0.01"
 
 
 def test_snap_volume_rejects_broker_minimum_above_risk_cap() -> None:
