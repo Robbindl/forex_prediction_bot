@@ -105,7 +105,7 @@ def test_gold_parity_lots_scales_low_paying_assets_up() -> None:
     lots, reason = CTraderOneShot._gold_parity_lots(47.0, 10.0)
 
     assert lots == pytest.approx(0.047)
-    assert reason == "gold percent cash parity"
+    assert reason == "gold trade cash parity"
 
 
 def test_gold_parity_lots_keeps_higher_paying_assets_at_minimum() -> None:
@@ -113,6 +113,46 @@ def test_gold_parity_lots_keeps_higher_paying_assets_at_minimum() -> None:
 
     assert lots == pytest.approx(0.01)
     assert reason == "target output >= gold benchmark; fixed 0.01"
+
+
+def test_trade_cash_parity_scales_usdcad_from_planned_target() -> None:
+    bridge = CTraderOneShot.__new__(CTraderOneShot)
+    bridge.light_symbol_by_id = {1: SimpleNamespace(baseAssetId=10, quoteAssetId=11)}
+    bridge.assets_by_id = {10: "USD", 11: "CAD"}
+    bridge._pending_conversions = {"CAD": {"rate": 0.73, "symbol_name": "USDCAD"}}
+    symbol = SimpleNamespace(lotSize=10_000_000)
+
+    cash, profile = bridge._cash_value_usd_for_price_move_at_001_lots(
+        symbol,
+        1,
+        price_move=0.0013,
+    )
+    lots, reason = CTraderOneShot._gold_parity_lots(47.0, cash)
+
+    assert cash == pytest.approx(0.949)
+    assert lots == pytest.approx(0.495258, rel=1e-4)
+    assert reason == "gold trade cash parity"
+    assert profile["units_at_0_01_lots"] == 1000.0
+
+
+def test_trade_cash_parity_keeps_xag_at_minimum_when_target_pays_more() -> None:
+    bridge = CTraderOneShot.__new__(CTraderOneShot)
+    bridge.light_symbol_by_id = {42: SimpleNamespace(baseAssetId=20, quoteAssetId=21)}
+    bridge.assets_by_id = {20: "XAG", 21: "USD"}
+    bridge._pending_conversions = {}
+    symbol = SimpleNamespace(lotSize=500_000)
+
+    cash, profile = bridge._cash_value_usd_for_price_move_at_001_lots(
+        symbol,
+        42,
+        price_move=1.28,
+    )
+    lots, reason = CTraderOneShot._gold_parity_lots(47.0, cash)
+
+    assert cash == pytest.approx(64.0)
+    assert lots == pytest.approx(0.01)
+    assert reason == "target output >= gold benchmark; fixed 0.01"
+    assert profile["units_at_0_01_lots"] == 50.0
 
 
 def test_snap_volume_rejects_broker_minimum_above_risk_cap() -> None:
