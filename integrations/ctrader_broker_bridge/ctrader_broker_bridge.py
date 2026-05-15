@@ -36,6 +36,7 @@ from ctrader_open_api.messages.OpenApiMessages_pb2 import (
     ProtoOASymbolByIdRes,
 )
 from ctrader_open_api.messages.OpenApiModelMessages_pb2 import (
+    ProtoOAClientPermissionScope,
     ProtoOAExecutionType,
     ProtoOAOrderType,
     ProtoOATimeInForce,
@@ -179,6 +180,7 @@ class CTraderOneShot:
         self._finished = False
         self._stage = "init"
         self._order_request_sent = False
+        self._permission_scope: Optional[int] = None
 
     def _mark_stage(self, stage: str) -> None:
         self._stage = str(stage or "").strip() or self._stage
@@ -422,6 +424,7 @@ class CTraderOneShot:
         if not accounts:
             self._finish(False, "No cTrader accounts were returned for the execution token")
             return
+        self._permission_scope = int(getattr(parsed, "permissionScope", 0) or 0)
         selected = None
         if self.account_hint:
             for item in accounts:
@@ -483,13 +486,55 @@ class CTraderOneShot:
         elif self.action == "preflight":
             self._send_preflight()
         elif self.action in {"place_order", "order_preflight"}:
+            if not self._has_trade_permission():
+                self._finish(
+                    False,
+                    "broker_permission_denied: cTrader execution token is view-only "
+                    f"({self._permission_scope_label()}); regenerate Pepperstone token with scope=trading",
+                    account_id=str(self.account_id or ""),
+                    environment=self.environment,
+                    broker_name=os.getenv("CTRADER_EXECUTION_BROKER_NAME", "pepperstone"),
+                    permission_scope=self._permission_scope_label(),
+                )
+                return
             self._send_place_order()
         elif self.action in {"close_position", "partial_close"}:
+            if not self._has_trade_permission():
+                self._finish(
+                    False,
+                    "broker_permission_denied: cTrader execution token is view-only "
+                    f"({self._permission_scope_label()}); regenerate Pepperstone token with scope=trading",
+                    account_id=str(self.account_id or ""),
+                    environment=self.environment,
+                    broker_name=os.getenv("CTRADER_EXECUTION_BROKER_NAME", "pepperstone"),
+                    permission_scope=self._permission_scope_label(),
+                )
+                return
             self._send_close_position()
         elif self.action == "update_stop":
+            if not self._has_trade_permission():
+                self._finish(
+                    False,
+                    "broker_permission_denied: cTrader execution token is view-only "
+                    f"({self._permission_scope_label()}); regenerate Pepperstone token with scope=trading",
+                    account_id=str(self.account_id or ""),
+                    environment=self.environment,
+                    broker_name=os.getenv("CTRADER_EXECUTION_BROKER_NAME", "pepperstone"),
+                    permission_scope=self._permission_scope_label(),
+                )
+                return
             self._send_update_stop()
         else:
             self._finish(False, f"unsupported cTrader bridge action: {self.action}")
+
+    def _has_trade_permission(self) -> bool:
+        return int(self._permission_scope or 0) == int(ProtoOAClientPermissionScope.SCOPE_TRADE)
+
+    def _permission_scope_label(self) -> str:
+        try:
+            return ProtoOAClientPermissionScope.Name(int(self._permission_scope or 0))
+        except Exception:
+            return str(self._permission_scope or "unset")
 
     def _build_symbol_lookup(self) -> None:
         lookup: Dict[str, Tuple[int, str]] = {}
