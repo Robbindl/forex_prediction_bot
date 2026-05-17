@@ -2447,52 +2447,10 @@ class TradingCore:
         router = getattr(self, "exchange_router", None)
         if router is None or not hasattr(router, "list_open_positions"):
             return
-        if hasattr(router, "has_adapter") and not router.has_adapter("ig"):
-            try:
-                self._ensure_execution_adapter_registered("ig")
-            except Exception as exc:
-                self._notify_broker_issue(
-                    "BROKER",
-                    "broker",
-                    str(exc),
-                    stage="broker position reconciliation",
-                    action="IG positions were not reconciled; IG adapter unavailable",
-                )
-                return
-        if hasattr(router, "has_adapter") and not router.has_adapter("ig"):
-            self._notify_broker_issue(
-                "BROKER",
-                "broker",
-                "IG adapter unavailable",
-                stage="broker position reconciliation",
-                action="IG positions were not reconciled; local state left unchanged",
-            )
-            return
         now = time.monotonic()
         if not force and now - float(self._last_broker_position_reconcile or 0.0) < self._broker_reconcile_interval_seconds():
             return
         self._last_broker_position_reconcile = now
-        try:
-            raw_positions = router.list_open_positions("ig")
-        except Exception as exc:
-            self._notify_broker_issue(
-                "BROKER",
-                "broker",
-                str(exc),
-                stage="broker position reconciliation",
-                action="IG positions were not reconciled; local state left unchanged",
-            )
-            return
-
-        normalized_raw_positions = [item for item in list(raw_positions or []) if isinstance(item, dict)]
-        by_deal_id: Dict[str, Dict[str, Any]] = {}
-        for item in normalized_raw_positions:
-            if not isinstance(item, dict):
-                continue
-            broker_pos = item.get("position") if isinstance(item.get("position"), dict) else {}
-            deal_id = str(broker_pos.get("dealId") or "").strip()
-            if deal_id:
-                by_deal_id[deal_id] = item
 
         synced = 0
         rematched = 0
@@ -2501,68 +2459,114 @@ class TradingCore:
         active_missing_keys: set[str] = set()
         if not hasattr(self, "_broker_missing_position_first_seen"):
             self._broker_missing_position_first_seen = {}
-        for pos in ig_positions:
-            deal_id = str(pos.get("broker_trade_id") or pos.get("trade_id") or "").strip()
-            trade_id = str(pos.get("trade_id") or deal_id or "").strip()
-            missing_key = deal_id or trade_id
-            if missing_key:
-                active_missing_keys.add(missing_key)
-            raw_item = by_deal_id.get(deal_id)
-            if raw_item:
-                used_deal_ids.add(deal_id)
-                if missing_key:
-                    self._broker_missing_position_first_seen.pop(missing_key, None)
-                snapshot = self._extract_ig_position_snapshot(pos, raw_item)
-                if snapshot != pos:
-                    self.state.sync_open_position(snapshot)
-                    synced += 1
-                continue
-            raw_item = self._match_ig_position_for_local(pos, normalized_raw_positions, used_deal_ids)
-            if raw_item:
-                broker_pos = raw_item.get("position") if isinstance(raw_item.get("position"), dict) else {}
-                new_deal_id = str(broker_pos.get("dealId") or "").strip()
-                if new_deal_id:
-                    used_deal_ids.add(new_deal_id)
-                if missing_key:
-                    self._broker_missing_position_first_seen.pop(missing_key, None)
-                snapshot = self._extract_ig_position_snapshot(pos, raw_item)
-                metadata = dict(snapshot.get("metadata") or {})
-                metadata["broker_reconciliation_deal_remap"] = {
-                    "source": "ig_positions",
-                    "remapped_at": datetime.now(timezone.utc).isoformat(),
-                    "old_deal_id": deal_id,
-                    "new_deal_id": new_deal_id,
-                    "reason": "matched remaining broker position by epic and direction after deal id mismatch",
-                }
-                snapshot["metadata"] = metadata
-                self.state.sync_open_position(snapshot)
-                rematched += 1
-                logger.warning(
-                    f"[TradingCore] IG reconciliation remapped {pos.get('asset')} "
-                    f"{deal_id or 'unknown'} -> {new_deal_id or 'unknown'}"
+        should_reconcile_ig = active_provider == "ig" or bool(ig_positions)
+        should_reconcile_ctrader = active_provider == "ctrader" or bool(ctrader_positions)
+        if should_reconcile_ig:
+            if hasattr(router, "has_adapter") and not router.has_adapter("ig"):
+                try:
+                    self._ensure_execution_adapter_registered("ig")
+                except Exception as exc:
+                    self._notify_broker_issue(
+                        "BROKER",
+                        "broker",
+                        str(exc),
+                        stage="broker position reconciliation",
+                        action="IG positions were not reconciled; IG adapter unavailable",
+                    )
+                    return
+            if hasattr(router, "has_adapter") and not router.has_adapter("ig"):
+                self._notify_broker_issue(
+                    "BROKER",
+                    "broker",
+                    "IG adapter unavailable",
+                    stage="broker position reconciliation",
+                    action="IG positions were not reconciled; local state left unchanged",
                 )
-                continue
-            if not missing_key or not self._broker_missing_position_confirmed(pos, missing_key, now, broker_label="IG"):
-                continue
-            if self._close_local_broker_position_missing_on_ig(pos):
-                self._broker_missing_position_first_seen.pop(missing_key, None)
-                closed_missing += 1
+                return
+            try:
+                raw_positions = router.list_open_positions("ig")
+            except Exception as exc:
+                self._notify_broker_issue(
+                    "BROKER",
+                    "broker",
+                    str(exc),
+                    stage="broker position reconciliation",
+                    action="IG positions were not reconciled; local state left unchanged",
+                )
+                return
 
-        if self._broker_missing_position_first_seen:
-            self._broker_missing_position_first_seen = {
-                key: first_seen
-                for key, first_seen in self._broker_missing_position_first_seen.items()
-                if key in active_missing_keys
-            }
+            normalized_raw_positions = [item for item in list(raw_positions or []) if isinstance(item, dict)]
+            by_deal_id: Dict[str, Dict[str, Any]] = {}
+            for item in normalized_raw_positions:
+                if not isinstance(item, dict):
+                    continue
+                broker_pos = item.get("position") if isinstance(item.get("position"), dict) else {}
+                deal_id = str(broker_pos.get("dealId") or "").strip()
+                if deal_id:
+                    by_deal_id[deal_id] = item
 
-        if synced or rematched or closed_missing:
-            logger.info(
-                f"[TradingCore] IG reconciliation synced={synced} remapped={rematched} "
-                f"closed_missing={closed_missing}"
-            )
-            self._publish_positions_snapshot()
+            for pos in ig_positions:
+                deal_id = str(pos.get("broker_trade_id") or pos.get("trade_id") or "").strip()
+                trade_id = str(pos.get("trade_id") or deal_id or "").strip()
+                missing_key = deal_id or trade_id
+                if missing_key:
+                    active_missing_keys.add(missing_key)
+                raw_item = by_deal_id.get(deal_id)
+                if raw_item:
+                    used_deal_ids.add(deal_id)
+                    if missing_key:
+                        self._broker_missing_position_first_seen.pop(missing_key, None)
+                    snapshot = self._extract_ig_position_snapshot(pos, raw_item)
+                    if snapshot != pos:
+                        self.state.sync_open_position(snapshot)
+                        synced += 1
+                    continue
+                raw_item = self._match_ig_position_for_local(pos, normalized_raw_positions, used_deal_ids)
+                if raw_item:
+                    broker_pos = raw_item.get("position") if isinstance(raw_item.get("position"), dict) else {}
+                    new_deal_id = str(broker_pos.get("dealId") or "").strip()
+                    if new_deal_id:
+                        used_deal_ids.add(new_deal_id)
+                    if missing_key:
+                        self._broker_missing_position_first_seen.pop(missing_key, None)
+                    snapshot = self._extract_ig_position_snapshot(pos, raw_item)
+                    metadata = dict(snapshot.get("metadata") or {})
+                    metadata["broker_reconciliation_deal_remap"] = {
+                        "source": "ig_positions",
+                        "remapped_at": datetime.now(timezone.utc).isoformat(),
+                        "old_deal_id": deal_id,
+                        "new_deal_id": new_deal_id,
+                        "reason": "matched remaining broker position by epic and direction after deal id mismatch",
+                    }
+                    snapshot["metadata"] = metadata
+                    self.state.sync_open_position(snapshot)
+                    rematched += 1
+                    logger.warning(
+                        f"[TradingCore] IG reconciliation remapped {pos.get('asset')} "
+                        f"{deal_id or 'unknown'} -> {new_deal_id or 'unknown'}"
+                    )
+                    continue
+                if not missing_key or not self._broker_missing_position_confirmed(pos, missing_key, now, broker_label="IG"):
+                    continue
+                if self._close_local_broker_position_missing_on_ig(pos):
+                    self._broker_missing_position_first_seen.pop(missing_key, None)
+                    closed_missing += 1
 
-        if self.active_execution_broker() != "ctrader" and not ctrader_positions:
+            if self._broker_missing_position_first_seen and not should_reconcile_ctrader:
+                self._broker_missing_position_first_seen = {
+                    key: first_seen
+                    for key, first_seen in self._broker_missing_position_first_seen.items()
+                    if key in active_missing_keys
+                }
+
+            if synced or rematched or closed_missing:
+                logger.info(
+                    f"[TradingCore] IG reconciliation synced={synced} remapped={rematched} "
+                    f"closed_missing={closed_missing}"
+                )
+                self._publish_positions_snapshot()
+
+        if not should_reconcile_ctrader:
             return
         if hasattr(router, "has_adapter") and not router.has_adapter("ctrader"):
             try:
