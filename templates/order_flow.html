@@ -584,10 +584,13 @@ async function loadDepthTape() {
     }
     const rows = Array.isArray(d.rows) ? d.rows : [];
     if(!rows.length){
-      badge.textContent = d.running ? 'Waiting…' : (d.enabled ? 'Starting…' : 'Disabled');
+      const running = !!(d.running || d.healthy || d.market_quiet);
+      badge.textContent = running ? (d.market_quiet ? 'Closed' : 'Waiting…') : (d.enabled ? 'Starting…' : 'Disabled');
       const reason = !d.enabled
         ? 'Dukascopy live depth is disabled in the environment.'
-        : d.running
+        : d.market_quiet
+          ? 'The Dukascopy bridge is available, but the tracked markets are closed so fresh depth snapshots may not arrive yet.'
+        : running
           ? 'The Dukascopy bridge is running, but no fresh depth snapshots have arrived yet.'
           : 'The Dukascopy bridge is not running yet. Start the full bot after Java and Maven are available.';
       list.innerHTML = `<div class="empty">${reason}</div>`;

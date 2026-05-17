@@ -50,6 +50,35 @@ _STORE_WRITE_MIN_INTERVAL = 0.75
 _DEFAULT_STALE_SECONDS = 30.0
 _RESTART_COOLDOWN_SECONDS = 45.0
 
+
+def _external_sidecar_pid() -> Optional[int]:
+    if os.name != "posix":
+        return None
+    needle = "dukascopy-depth-bridge-1.0-shaded.jar"
+    try:
+        output = subprocess.check_output(
+            ["ps", "-eo", "pid=,args="],
+            text=True,
+            stderr=subprocess.DEVNULL,
+            timeout=2,
+        )
+    except Exception:
+        return None
+    current_pid = os.getpid()
+    for line in output.splitlines():
+        stripped = line.strip()
+        if not stripped or needle not in stripped:
+            continue
+        parts = stripped.split(None, 1)
+        try:
+            pid = int(parts[0])
+        except Exception:
+            continue
+        if pid != current_pid:
+            return pid
+    return None
+
+
 _SUPPORTED_LIVE_SYMBOLS: Dict[str, Dict[str, str]] = {
     "EUR/USD": {"symbol": "EUR/USD", "category": "forex"},
     "EUR/JPY": {"symbol": "EUR/JPY", "category": "forex"},
@@ -731,8 +760,19 @@ class DukascopyLiveDepthBridge:
         fresh_store_snapshot = bool(
             assets and snapshot_age is not None and snapshot_age <= _DEFAULT_STALE_SECONDS
         )
-        running_elsewhere = bool(self._enabled and not running and fresh_store_snapshot and not stale)
-        healthy = bool(self._enabled and (running or market_quiet or running_elsewhere) and not stale)
+        external_pid = None if running else _external_sidecar_pid()
+        running_elsewhere = bool(
+            self._enabled
+            and not running
+            and (
+                (external_pid is not None)
+                or (fresh_store_snapshot and not stale)
+            )
+        )
+        effective_running = bool(running or running_elsewhere)
+        if pid is None and external_pid is not None:
+            pid = external_pid
+        healthy = bool(self._enabled and (effective_running or market_quiet) and not stale)
         if not self._enabled:
             state = "disabled"
         elif healthy:
@@ -750,7 +790,8 @@ class DukascopyLiveDepthBridge:
             state = "stopped"
         return {
             "enabled": self._enabled,
-            "running": running,
+            "running": effective_running,
+            "local_process_running": running,
             "running_elsewhere": running_elsewhere,
             "process_owner": "external" if running_elsewhere else "local",
             "pid": pid,
