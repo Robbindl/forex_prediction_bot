@@ -438,6 +438,13 @@ class CTraderDepthBridge:
         if hasattr(message, 'payload') and hasattr(message, 'payloadType'):
             payload_type = message.payloadType
             try:
+                if payload_type == int(ProtoOAErrorRes().payloadType):
+                    error = ProtoOAErrorRes()
+                    error.ParseFromString(message.payload)
+                    code = str(getattr(error, "errorCode", "") or "ctrader_error")
+                    description = str(getattr(error, "description", "") or code)
+                    self._fatal(RuntimeError(f"{code}: {description} at stage={self._stage}"))
+                    return
                 if payload_type == 2131:  # ProtoOASpotEvent
                     spot = ProtoOASpotEvent()
                     spot.ParseFromString(message.payload)
