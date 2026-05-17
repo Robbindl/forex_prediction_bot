@@ -19,6 +19,7 @@ from ctrader_open_api.messages.OpenApiMessages_pb2 import (
     ProtoOASpotEvent,
     ProtoOASubscribeDepthQuotesReq,
     ProtoOASubscribeSpotsReq,
+    ProtoOASymbolsListRes,
     ProtoOASymbolsListReq,
     ProtoOADepthEvent,
 )
@@ -341,6 +342,8 @@ class CTraderDepthBridge:
         self.client.send(req).addCallbacks(self._after_symbols, self._fatal)
 
     def _after_symbols(self, response: Any) -> None:
+        if self._ready:
+            return
         # Optional debug tracing for symbol mapping.
         _debug(f"Symbols response: {response}")
         _debug(f"Symbols response type: {type(response)}")
@@ -461,6 +464,10 @@ class CTraderDepthBridge:
                     depth_res = ProtoOASubscribeDepthQuotesRes()
                     depth_res.ParseFromString(message.payload)
                     _debug(f"Depth subscription response: {depth_res}")
+                    return
+                elif payload_type == int(ProtoOASymbolsListRes().payloadType):
+                    _debug("Symbols list response received via message callback")
+                    self._after_symbols(message)
                     return
                 else:
                     _debug(f"Unknown payloadType: {payload_type}")
