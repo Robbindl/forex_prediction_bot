@@ -129,6 +129,9 @@ class CTraderDepthBridge:
         self._cached_refresh_token = ""
         self._account_list_retry_used = False
         self._active_token_source = "configured access token" if self.access_token else ""
+        self._ready = False
+        self._stage = "init"
+        self._exit_code = 0
 
         self.client: Optional[Client] = None
         self.account_id: Optional[int] = None
@@ -172,7 +175,7 @@ class CTraderDepthBridge:
         self.client.setMessageReceivedCallback(self._on_message)
         self.client.startService()
         reactor.run()
-        return 0
+        return self._exit_code
 
     def _load_cached_tokens(self) -> None:
         if not self.token_cache_path.exists():
@@ -226,14 +229,17 @@ class CTraderDepthBridge:
 
     def _on_connected(self, client: Client) -> None:
         _stderr(f"Connected to cTrader {self.environment} endpoint.")
+        self._stage = "application_auth"
         req = ProtoOAApplicationAuthReq(clientId=self.client_id, clientSecret=self.client_secret)
         client.send(req).addCallbacks(self._after_app_auth, self._fatal)
 
     def _after_app_auth(self, _response: Any) -> None:
+        self._stage = "account_list"
         self._request_account_list()
 
     def _request_account_list(self) -> None:
         assert self.client is not None
+        self._stage = "account_list"
         req = ProtoOAGetAccountListByAccessTokenReq(accessToken=self.access_token)
         self.client.send(req).addCallbacks(self._after_account_list, self._fatal)
 
@@ -324,11 +330,13 @@ class CTraderDepthBridge:
         _stderr(f"Authorizing cTrader account {self.account_id}{f' (login {login})' if login else ''}.")
 
         assert self.client is not None
+        self._stage = "account_auth"
         req = ProtoOAAccountAuthReq(ctidTraderAccountId=self.account_id, accessToken=self.access_token)
         self.client.send(req).addCallbacks(self._after_account_auth, self._fatal)
 
     def _after_account_auth(self, _response: Any) -> None:
         assert self.client is not None and self.account_id is not None
+        self._stage = "symbols_list"
         req = ProtoOASymbolsListReq(ctidTraderAccountId=self.account_id, includeArchivedSymbols=False)
         self.client.send(req).addCallbacks(self._after_symbols, self._fatal)
 
@@ -399,10 +407,18 @@ class CTraderDepthBridge:
                 symbolId=matched_symbol_ids,
             )
         ).addErrback(self._fatal)
+        self._ready = True
+        self._stage = "subscribed"
         _stderr(f"Depth bridge running for {len(matched_symbol_ids)} matched assets.")
 
     def _on_disconnected(self, _client: Client, reason: Any) -> None:
         _stderr(f"Disconnected from cTrader: {reason}")
+        if not self._ready and self._exit_code == 0:
+            self._exit_code = 1
+            _stderr(
+                "Fatal cTrader bridge error: disconnected before depth subscriptions became ready "
+                f"(stage={self._stage})."
+            )
         if reactor.running:
             reactor.callLater(0.1, reactor.stop)
 
@@ -586,6 +602,7 @@ class CTraderDepthBridge:
         tmp.replace(self.store_path)
 
     def _fatal(self, failure: Any) -> Any:
+        self._exit_code = 1
         _stderr(f"Fatal cTrader bridge error: {failure}")
         if reactor.running:
             reactor.callLater(0.1, reactor.stop)
