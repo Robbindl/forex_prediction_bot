@@ -159,14 +159,14 @@ class CTraderDepthBridge:
             _stderr("cTrader client credentials are missing. Set CTRADER_LIVE_DEPTH_CLIENT_ID and CTRADER_LIVE_DEPTH_CLIENT_SECRET.")
             return 2
         self._load_cached_tokens()
-        if self.refresh_token:
+        if not self.access_token and self.refresh_token:
             refreshed = self._refresh_access_token(self.refresh_token, label="configured")
             if not refreshed and self._cached_refresh_token and self._cached_refresh_token != self.refresh_token:
                 self._refresh_access_token(self._cached_refresh_token, label="cached")
         if not self.access_token:
             auth = Auth(self.client_id, self.client_secret, self.redirect_uri)
             _stderr("Missing cTrader access token. Generate one via the Open API OAuth flow or Playground.")
-            _stderr(f"Authorization URL: {auth.getAuthUri(scope='trading')}")
+            _stderr(f"Authorization URL: {auth.getAuthUri(scope='accounts')}")
             return 2
 
         host = EndPoints.PROTOBUF_DEMO_HOST if self.environment == "demo" else EndPoints.PROTOBUF_LIVE_HOST
@@ -215,18 +215,23 @@ class CTraderDepthBridge:
         except Exception as exc:
             _stderr(f"Token refresh failed for {label} token: {exc}")
             return False
+        error_code = str((response or {}).get("errorCode") or "").strip()
+        if error_code:
+            description = str((response or {}).get("description") or error_code).strip()
+            _stderr(f"Token refresh failed for {label} token: {error_code}: {description}")
+            return False
         token = str((response or {}).get("accessToken") or "").strip()
+        if not token:
+            _stderr(f"Token refresh failed for {label} token: no accessToken returned")
+            return False
         refresh = str((response or {}).get("refreshToken") or token_value).strip()
-        if token:
-            self.access_token = token
+        self.access_token = token
         if refresh:
             self.refresh_token = refresh
-        if self.access_token:
-            self._persist_tokens()
-            self._active_token_source = f"{label} refresh token"
-            _stderr(f"Refreshed cTrader access token from {label} refresh token.")
-            return True
-        return False
+        self._persist_tokens()
+        self._active_token_source = f"{label} refresh token"
+        _stderr(f"Refreshed cTrader access token from {label} refresh token.")
+        return True
 
     def _on_connected(self, client: Client) -> None:
         _stderr(f"Connected to cTrader {self.environment} endpoint.")
@@ -249,9 +254,14 @@ class CTraderDepthBridge:
             return False
         self._account_list_retry_used = True
 
-        if self._cached_refresh_token and self._cached_refresh_token != self.refresh_token:
-            if self._refresh_access_token(self._cached_refresh_token, label="cached-after-empty-account-list"):
-                _stderr("Retrying cTrader account list with cached refresh token after empty account response.")
+        refresh_candidates: List[Tuple[str, str]] = []
+        if self.refresh_token:
+            refresh_candidates.append(("configured-after-account-list", self.refresh_token))
+        if self._cached_refresh_token and self._cached_refresh_token not in {item[1] for item in refresh_candidates}:
+            refresh_candidates.append(("cached-after-account-list", self._cached_refresh_token))
+        for label, token in refresh_candidates:
+            if self._refresh_access_token(token, label=label):
+                _stderr("Retrying cTrader account list with refreshed access token.")
                 self._request_account_list()
                 return True
 
