@@ -28,6 +28,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from core.assets  import registry
 from data.fetcher import DataFetcher, get_shared_fetcher
+from config.config import get_chart_timeframe_periods
 from services.live_position_pricing import normalize_position_price, normalize_position_prices, resolve_live_position_snapshot
 from utils.logger import get_logger
 from utils.api_errors import (
@@ -7209,7 +7210,6 @@ def api_chart_assets():
 @_check_rate_limit
 def api_chart_candles():
     try:
-        from config.config import get_chart_timeframe_periods
         asset    = request.args.get("asset", "EUR/USD")
         interval = request.args.get("interval", "15m")
         cat      = _cat(asset)
