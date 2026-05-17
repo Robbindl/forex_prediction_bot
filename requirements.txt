@@ -24,7 +24,7 @@ flask>=2.3.0
 flask-cors>=4.0.0
 flask-socketio>=5.3.0
 python-multipart>=0.0.22
-hypercorn>=1.0.0
+hypercorn>=0.18.0,<1.0.0
 h2>=4.1.0
 
 # Telegram
