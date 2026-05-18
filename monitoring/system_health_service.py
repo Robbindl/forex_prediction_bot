@@ -33,6 +33,13 @@ HISTORY_WINDOW       = 3600
 # ── Data freshness thresholds (seconds) ──────────────────────────────────────
 # If a source hasn't been updated within this window, it is considered STALE.
 
+def _threshold_env(name: str, default: int) -> int:
+    try:
+        return max(1, int(float(os.getenv(name, str(default)) or default)))
+    except Exception:
+        return int(default)
+
+
 FRESHNESS_THRESHOLDS: Dict[str, int] = {
     "order_book":   10,      # order book must update every 10s
     "ctrader_live_depth": 30,
@@ -40,7 +47,10 @@ FRESHNESS_THRESHOLDS: Dict[str, int] = {
     "trades":       30,      # trade feed every 30s
     "liquidations": 60,      # liquidation feed every 60s
     "news":         3600,    # news every hour
-    "technicals":   300,     # OHLCV cached for 180s (CACHE_TTL) — allow 300s before stale
+    # Signal candles are 15m by default, so this needs to tolerate one normal
+    # candle cycle plus processing delay. DataFetcher still rejects genuinely
+    # stale OHLCV independently by interval.
+    "technicals":   _threshold_env("SYSTEM_TECHNICALS_FRESHNESS_SECS", 1200),
     "whale":        300,     # whale alerts every 5 min
     "sentiment":    1800,    # sentiment score every 30 min
     # FIX HIGH: FundingRateMonitor polls every POLL_INTERVAL=300 seconds.
