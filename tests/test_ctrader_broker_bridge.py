@@ -78,13 +78,37 @@ def test_symbol_trading_enabled_rejects_disabled_contract() -> None:
     assert CTraderOneShot._symbol_trading_mode_label(disabled) == "CLOSE_ONLY_MODE"
 
 
-def test_crypto_max_lots_defaults_to_global_cap(monkeypatch) -> None:
+def test_crypto_max_lots_defaults_to_parity_cap(monkeypatch) -> None:
     monkeypatch.delenv("PEPPERSTONE_CTRADER_MAX_LOTS_CRYPTO", raising=False)
     monkeypatch.delenv("PEPPERSTONE_CTRADER_LIVE_MAX_LOTS_CRYPTO", raising=False)
     monkeypatch.setenv("PEPPERSTONE_CTRADER_MAX_LOTS", "1.00")
     bridge = CTraderOneShot.__new__(CTraderOneShot)
 
     cap, source = bridge._max_lots_cap_for_asset("ETH-USD")
+
+    assert cap == 100.00
+    assert source == "crypto_default_cap"
+
+
+def test_indices_max_lots_defaults_to_parity_cap(monkeypatch) -> None:
+    monkeypatch.delenv("PEPPERSTONE_CTRADER_MAX_LOTS_INDICES", raising=False)
+    monkeypatch.delenv("PEPPERSTONE_CTRADER_LIVE_MAX_LOTS_INDICES", raising=False)
+    monkeypatch.setenv("PEPPERSTONE_CTRADER_MAX_LOTS", "1.00")
+    bridge = CTraderOneShot.__new__(CTraderOneShot)
+
+    cap, source = bridge._max_lots_cap_for_asset("JPN225")
+
+    assert cap == 100.00
+    assert source == "indices_default_cap"
+
+
+def test_commodities_max_lots_keep_global_cap(monkeypatch) -> None:
+    monkeypatch.delenv("PEPPERSTONE_CTRADER_MAX_LOTS_COMMODITIES", raising=False)
+    monkeypatch.delenv("PEPPERSTONE_CTRADER_LIVE_MAX_LOTS_COMMODITIES", raising=False)
+    monkeypatch.setenv("PEPPERSTONE_CTRADER_MAX_LOTS", "1.00")
+    bridge = CTraderOneShot.__new__(CTraderOneShot)
+
+    cap, source = bridge._max_lots_cap_for_asset("XAG/USD")
 
     assert cap == 1.00
     assert source == "global_cap"

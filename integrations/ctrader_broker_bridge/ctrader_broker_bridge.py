@@ -764,6 +764,15 @@ class CTraderOneShot:
             )
         if category_text:
             return max(0.01, _safe_float(category_text, base_cap)), f"{category}_env_cap"
+        category_default_caps = {
+            "crypto": 100.0,
+            "indices": 100.0,
+            "forex": 1.0,
+            "commodities": 1.0,
+        }
+        category_default = category_default_caps.get(category)
+        if category_default and category_default > base_cap:
+            return category_default, f"{category}_default_cap"
         return base_cap, "global_cap"
 
     @staticmethod
